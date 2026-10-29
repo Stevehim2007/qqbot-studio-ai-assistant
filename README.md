@@ -327,15 +327,18 @@ mock 测试覆盖：配置 `0600`、独立/实例 Key、路径越界、`/api/sta
 固定 `deepseek-flash`、`stream=false`、Key 不出现在响应/错误、上游 401 脱敏、
 拒绝上游重定向、Host/Origin/Content-Type/输入校验、CSP 等安全头。测试不访问外网、不消耗 token。
 
-GitHub Actions 在 Ubuntu 和 Windows 上运行 Python 3.10/3.12 的 mock 测试，
-并在 Windows 上做 PowerShell 语法解析检查（若可运行）。
+GitHub Actions 在 Ubuntu 和 Windows 上运行 Python 3.10/3.12 的 mock 测试；
+Linux 和 Windows 还会执行安装器 smoke test（创建配置/启动器、运行 `--version`、
+卸载与 purge），Windows 另做 PowerShell 语法解析检查。
 
 ### 当前验证边界（重要）
 
 - 开发和验证环境为 Linux/WSL2；**没有真实 DeepSeek API Key，未进行真实 DeepSeek 联调**。
   所有通过均为本地 mock HTTP 测试，不能声称真实 API 已联通。
-- Windows `install.ps1` 和 Windows 计划任务未在本次 Linux 环境实际安装执行；
-  CI 只验证 Python 测试和 PowerShell 解析，仍需在真实 Windows 上做安装/启动/卸载手测。
+- 本次开发环境是 Linux；不过 GitHub Actions 的 Windows runner 已实际执行
+  `install.ps1` 的配置创建、NTFS ACL、.cmd 启动器 `--version`、卸载与 purge smoke test。
+  `-InstallService` 的登录计划任务创建/登录触发仍需在真实 Windows 用户会话中手测；
+  CI 不覆盖该可选分支。
 - 没有可用已部署 AstrBot 实例，实例 Key 复用仅用合成 `cmd_config.json` mock 验证；
   字段依据 AstrBot v4.29 结构，升级后需复核。
 - `deepseek-flash` 是否对目标账号可用、DeepSeek 接口是否变化，需要用户真实 Key 验证。
