@@ -71,15 +71,16 @@ function Invoke-PythonChecked {
 }
 
 function Test-ScheduledTaskExists {
-    & schtasks.exe /Query /TN $TaskName 2>$null | Out-Null
-    return ($LASTEXITCODE -eq 0)
+    if (-not (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue)) { return $false }
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    return ($null -ne $task)
 }
 
 function Remove-ScheduledTaskIfPresent {
     if (Test-ScheduledTaskExists) {
-        & schtasks.exe /End /TN $TaskName 2>$null | Out-Null
-        & schtasks.exe /Delete /TN $TaskName /F | Out-Null
-        if ($LASTEXITCODE -ne 0) {
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        if (Test-ScheduledTaskExists) {
             Write-Warning "无法删除计划任务 $TaskName，请使用任务计划程序手动检查。"
         }
     }
@@ -187,28 +188,32 @@ if ($ConfigureKey) {
 }
 
 if ($InstallService) {
-    if (-not (Get-Command schtasks.exe -ErrorAction SilentlyContinue)) {
-        Stop-WithMessage "未找到 schtasks.exe；配置和启动器已安装，可手动运行 $LauncherPath"
+    foreach ($cmdlet in @("New-ScheduledTaskAction", "New-ScheduledTaskTrigger", "New-ScheduledTaskPrincipal", "Register-ScheduledTask", "Start-ScheduledTask")) {
+        if (-not (Get-Command $cmdlet -ErrorAction SilentlyContinue)) {
+            Stop-WithMessage "当前系统缺少计划任务命令 $cmdlet；配置和启动器已安装，可手动运行 $LauncherPath"
+        }
     }
     $taskExe = $PythonExe
     $pythonBase = [System.IO.Path]::GetFileNameWithoutExtension($PythonExe)
     $pythonwName = if ($pythonBase -ieq "py") { "pyw.exe" } else { "pythonw.exe" }
     $pythonwPath = Join-Path ([System.IO.Path]::GetDirectoryName($PythonExe)) $pythonwName
     if (Test-Path -LiteralPath $pythonwPath) { $taskExe = $pythonwPath }
-    $taskParts = @((Quote-TaskArgument $taskExe))
-    foreach ($prefixPart in $PythonPrefix) { $taskParts += (Quote-TaskArgument $prefixPart) }
+    $taskArguments = @()
+    foreach ($prefixPart in $PythonPrefix) { $taskArguments += (Quote-TaskArgument $prefixPart) }
     foreach ($part in @($ScriptPath, "--config", $ConfigPath, "--studio-home", $StudioHome)) {
-        $taskParts += (Quote-TaskArgument $part)
+        $taskArguments += (Quote-TaskArgument $part)
     }
-    $taskCommand = $taskParts -join " "
-    & schtasks.exe /Create /TN $TaskName /SC ONLOGON /TR $taskCommand /F
-    if ($LASTEXITCODE -ne 0) { throw "无法创建 Windows 登录启动任务；可手动运行启动器：$LauncherPath" }
-    & schtasks.exe /Run /TN $TaskName
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "计划任务已创建，但首次启动失败；请检查端口或手动运行 $LauncherPath"
-    }
-    else {
+    $action = New-ScheduledTaskAction -Execute $taskExe -Argument ($taskArguments -join " ")
+    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Description "QQ Bot Studio optional AI Assistant B" -Force | Out-Null
+    try {
+        Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
         Write-Host "Windows 登录启动任务已创建并触发：$TaskName"
+    }
+    catch {
+        Write-Warning "计划任务已创建，但首次启动失败；请检查端口或手动运行 $LauncherPath"
     }
 }
 
