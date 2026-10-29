@@ -12,7 +12,7 @@ LAUNCHER="$BIN_DIR/qqbot-ai-assistant"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 UNIT_NAME="qqbot-ai-assistant.service"
 UNIT_PATH="$UNIT_DIR/$UNIT_NAME"
-PORT=8765
+PORT=8766
 INSTANCE_ID=""
 INSTALL_SERVICE=0
 CONFIGURE_KEY=0
@@ -23,7 +23,7 @@ PYTHON="${PYTHON:-}"
 usage() {
   cat <<'EOF'
 用法：./install.sh [选项]
-  --port PORT           初始化端口（默认 8765；已有配置不会被覆盖）
+  --port PORT           初始化端口（默认 8766；已有配置不会被覆盖）
   --instance-id ID      首次安装时显式复用该实例的 AstrBot DeepSeek Key
   --configure-key       安装后交互式输入独立 Key（不回显，不进入命令历史）
   --install-service     安装并启动 systemd 用户服务（可选）

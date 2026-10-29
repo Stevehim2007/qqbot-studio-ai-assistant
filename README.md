@@ -6,7 +6,7 @@
 > **A 默认保留；B 可选。** 主项目已有的离线知识库助手 A 不因 B 改变。B 不替代 A，
 > 代码也不进入主仓库。未安装或 B 配置/联网失败时，A 必须继续可用。
 
-- 当前版本：`0.1.0`
+- 当前版本：`0.1.1`
 - 固定模型：`deepseek-flash`
 - 固定上游：`https://api.deepseek.com/v1/chat/completions`
 - 运行依赖：Python 3.10+，无第三方 Python 包
@@ -23,7 +23,7 @@
 | 外部 API | 无 | DeepSeek |
 | 代码 | 主项目仓库 | 独立仓库 `qqbot-studio-ai-assistant` |
 | 数据 | 主项目管理 | `~/.local/share/qqbot-studio/ai-assistant/` |
-| 入口 | 主项目控制台 | `http://127.0.0.1:8765/`（可配置端口） |
+| 入口 | 主项目控制台 | `http://127.0.0.1:8766/`（可配置端口） |
 
 设计边界：B 独立仓库、独立配置、独立进程；主项目更新/升级不得自动安装 B；
 B 失败不得阻塞 A。
@@ -89,7 +89,7 @@ cd "$HOME/.local/share/qqbot-studio/extensions/ai-assistant"
 
 # 创建 ~/.local/share/qqbot-studio/ai-assistant/config.json（0600）
 # 和 ~/.local/bin/qqbot-ai-assistant
-./install.sh --port 8765
+./install.sh --port 8766
 
 # 交互式设置独立 Key：输入不回显，不进入 shell history
 python3 assistant.py \
@@ -99,7 +99,7 @@ python3 assistant.py \
 ~/.local/bin/qqbot-ai-assistant
 ```
 
-浏览器打开 <http://127.0.0.1:8765/>。也可用编辑器填写 config 中的 `api_key`，
+浏览器打开 <http://127.0.0.1:8766/>。也可用编辑器填写 config 中的 `api_key`，
 随后执行 `chmod 600 <config>`。服务读取时会再次收紧并校验权限。
 
 可选 systemd 用户服务：
@@ -139,7 +139,7 @@ git clone git@github.com:Stevehim2007/qqbot-studio-ai-assistant.git `
   "$HOME\.local\share\qqbot-studio\extensions\ai-assistant"
 Set-Location "$HOME\.local\share\qqbot-studio\extensions\ai-assistant"
 
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Port 8765
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Port 8766
 
 python .\assistant.py `
   --config "$HOME\.local\share\qqbot-studio\ai-assistant\config.json" `
@@ -180,7 +180,7 @@ Windows 显式复用实例：
 {
   "version": 1,
   "host": "127.0.0.1",
-  "port": 8765,
+  "port": 8766,
   "key_source": "independent",
   "api_key": "",
   "instance_id": "",
@@ -294,7 +294,7 @@ bash "$EXT_DIR/install.sh"
 
 | 能力 | 契约 |
 |---|---|
-| 入口 | `http://127.0.0.1:8765/`（B 配置改端口时跟随） |
+| 入口 | `http://127.0.0.1:8766/`（B 配置改端口时跟随） |
 | 安装 | 目标路径不存在时 clone；存在时不重复 clone |
 | 状态 | 调 `GET /api/health`；失败只显示未运行，不影响 A |
 | 更新 | 扩展目录内 `git pull --ff-only`；失败保留旧版本并提示 |

@@ -23,10 +23,10 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 APP_NAME = "qqbot-studio-ai-assistant"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 MODEL = "deepseek-flash"
 DEEPSEEK_CHAT_URL = "https://api.deepseek.com/v1/chat/completions"
-DEFAULT_PORT = 8765
+DEFAULT_PORT = 8766
 DEFAULT_TIMEOUT = 120
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 KEY_SOURCES = ("independent", "instance")
@@ -700,7 +700,7 @@ def parser() -> argparse.ArgumentParser:
     group.add_argument("--set-key", action="store_true", help="交互式保存独立 API Key（不回显）")
     group.add_argument("--check", action="store_true", help="检查配置和 Key，不启动服务")
     group.add_argument("--print-config-path", action="store_true", help="输出默认配置路径")
-    p.add_argument("--port", type=int, default=DEFAULT_PORT, help="初始化端口，默认 8765")
+    p.add_argument("--port", type=int, default=DEFAULT_PORT, help="初始化端口，默认 8766")
     p.add_argument("--instance-id", default="", help="初始化时显式复用该实例的 Key")
     return p
 
