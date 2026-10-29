@@ -74,4 +74,4 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "launcher failed with exit code $LASTEXITCODE" }
           .\install.ps1 -Uninstall
           .\install.ps1 -Uninstall -Purge
-          if (Test-Path -LiteralPath $env:QQBOT_STUDIO_HOME) { throw "purge left data directory behind" }
+          if (Test-Path -LiteralPath $env:QQBOT_AI_ASSISTANT_HOME) { throw "purge left B data directory behind" }
