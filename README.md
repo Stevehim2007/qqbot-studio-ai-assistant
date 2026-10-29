@@ -1,12 +1,13 @@
 # QQ Bot Studio · AI 助手 B（可选生成式 AI）
 
-这是 QQ Bot Studio 主项目之外的**独立子项目**。它用 Python 标准库提供本机 HTTP
+这是 QQ Bot Studio 主项目之外的**独立子项目**。它用 Python 标准库提供本地 HTTP
 服务与中文 Web UI，通过 DeepSeek OpenAI-compatible API 提供可选的生成式 AI 聊天能力。
+默认只监听回环地址；也支持用户**显式选择**高风险公网绑定。
 
 > **A 默认保留；B 可选。** 主项目已有的离线知识库助手 A 不因 B 改变。B 不替代 A，
 > 代码也不进入主仓库。未安装或 B 配置/联网失败时，A 必须继续可用。
 
-- 当前版本：`0.1.1`
+- 当前版本：`0.2.0`
 - 固定模型：`deepseek-flash`
 - 固定上游：`https://api.deepseek.com/v1/chat/completions`
 - 运行依赖：Python 3.10+，无第三方 Python 包
@@ -23,7 +24,7 @@
 | 外部 API | 无 | DeepSeek |
 | 代码 | 主项目仓库 | 独立仓库 `qqbot-studio-ai-assistant` |
 | 数据 | 主项目管理 | `~/.local/share/qqbot-studio/ai-assistant/` |
-| 入口 | 主项目控制台 | `http://127.0.0.1:8766/`（可配置端口） |
+| 入口 | 主项目控制台 | 默认 `http://127.0.0.1:8766/`；公网模式使用 `public_host:8766` |
 
 设计边界：B 独立仓库、独立配置、独立进程；主项目更新/升级不得自动安装 B；
 B 失败不得阻塞 A。
@@ -32,7 +33,8 @@ B 失败不得阻塞 A。
 
 ## 2. 功能
 
-- 本机回环 HTTP 服务，默认只绑定 `127.0.0.1`。
+- HTTP 服务默认只绑定 `127.0.0.1`；仅可显式配置 `host=0.0.0.0` 开放所有网卡。
+- 公网模式支持 `public_host` 显示域名/IP，但 `public_host` 不是认证或防火墙。
 - 中文 Web UI：Enter 发送、Shift+Enter 换行、清空浏览器内对话。
 - 模型和上游地址固定，网页/配置不能把 Key 导向其他域名。
 - 本地 JSON 配置，Linux/POSIX 权限强制 `0600`。
@@ -110,7 +112,16 @@ systemctl --user status qqbot-ai-assistant.service
 journalctl --user -u qqbot-ai-assistant.service -f
 ```
 
-WSL/容器若没有 systemd user bus，直接用启动器手动运行。服务仍只监听回环地址。
+WSL/容器若没有 systemd user bus，直接用启动器手动运行。默认仍只监听回环地址；
+只有显式配置 `host=0.0.0.0` 才会开放所有网卡。
+
+显式公网绑定（高风险；详见 §6.1）：
+
+```bash
+./install.sh --port 8766 --host 0.0.0.0 --public-host bot.example.com
+```
+
+安装器会打印无认证警告。不要裸奔公网；必须先配置防火墙/安全组、VPN 或带认证的反向代理。
 
 ### 4.1 显式复用实例 Key
 
@@ -170,6 +181,15 @@ Windows 显式复用实例：
 
 默认读取 `%USERPROFILE%\.local\share\qqbot-studio\instances\<实例ID>\data\astrbot\cmd_config.json`。
 
+Windows 显式公网绑定（高风险）：
+
+```powershell
+.\install.ps1 -Port 8766 -BindHost 0.0.0.0 -PublicHost bot.example.com
+```
+
+这是显式取消回环限制。服务无内置认证，禁止裸奔公网；必须用 Windows 防火墙/云安全组
+限制来源，或通过 VPN、带认证的反向代理访问。
+
 ---
 
 ## 6. 配置与命令
@@ -180,6 +200,7 @@ Windows 显式复用实例：
 {
   "version": 1,
   "host": "127.0.0.1",
+  "public_host": "",
   "port": 8766,
   "key_source": "independent",
   "api_key": "",
@@ -189,8 +210,11 @@ Windows 显式复用实例：
 }
 ```
 
-- `host` 只允许 `127.0.0.1`、`localhost`、`::1`；B 拒绝绑定公网。
-- `port` 1–65535；修改后重启。
+- `host`：默认 `127.0.0.1`；允许 `127.0.0.1`、`localhost`、`::1`，以及**显式**
+  `0.0.0.0`（所有网卡，高风险）。不接受其他具体网卡地址。
+- `public_host`：公网模式下用于启动日志/链接显示的纯 IP 或域名。不得包含协议、路径、
+  端口；它只是显示信息，**不改变监听地址、不提供认证或防火墙**。
+- `port`：1–65535；默认 `8766`，修改后重启。
 - `key_source`：`independent`（默认）或 `instance`。
 - `api_key`：独立 Key；`instance` 模式下不读取此字段。
 - `instance_id`：`instance` 模式必填；仅允许字母/数字/`.`/`_`/`-`。
@@ -206,16 +230,59 @@ python3 assistant.py --print-config-path
 python3 assistant.py --help
 ```
 
+### 6.1 显式公网绑定（高风险，默认关闭）
+
+默认必须保持回环。只有在清楚风险并已设置网络边界时，才可显式编辑配置：
+
+```json
+{
+  "host": "0.0.0.0",
+  "public_host": "bot.example.com",
+  "port": 8766
+}
+```
+
+或首次安装时：
+
+```bash
+./install.sh --port 8766 --host 0.0.0.0 --public-host bot.example.com
+```
+
+Windows：
+
+```powershell
+.\install.ps1 -Port 8766 -BindHost 0.0.0.0 -PublicHost bot.example.com
+```
+
+启动后：
+
+- `0.0.0.0` 是监听地址，不是可访问地址；请使用服务器公网 IP 或域名。
+- 启动日志会明确打印实际监听地址和以下警告：**服务无内置用户认证，禁止裸奔公网；
+  必须使用防火墙/安全组限制来源，或通过 VPN、带认证的反向代理访问。**
+- `public_host` 仅改变启动日志中显示的 URL，不允许把 Key 发往其他上游。
+- `Host` 必须是无畸形字符且带**实际监听端口**的合法公网 IP/域名；`0.0.0.0`、
+  `::`、缺端口、错误端口、路径、userinfo 等会被拒绝。
+- 浏览器 `Origin` 必须与 `Host` 的 hostname、实际端口一致；公网模式允许 HTTP/HTTPS
+  来源，回环模式仍只允许 HTTP 同源。`Host`/`Origin` 校验不是身份认证。
+- 若前置反向代理，代理必须保留 `Host`/`Origin` 与端口的一致性；B 不信任
+  `X-Forwarded-*`，也不自行提供 TLS、登录或访问控制。
+- API 仍没有鉴权。Host/Origin 防跨站不能阻止任何一个能直接连接该端口的客户端。
+
+> **安全底线：无认证服务禁止裸奔公网。** 至少要用云安全组/防火墙按来源 IP 限制，
+> 更推荐 VPN；若使用反向代理，必须在其上启用认证和 TLS，并保留本服务要求的
+> Host/Origin 端口一致性。
+
 ---
 
-## 7. 本地 API
+## 7. HTTP API
 
-无内置用户认证，仅供本机使用，**不要公开暴露**。
+无内置用户认证。默认仅供本机使用；显式 `host=0.0.0.0` 公网绑定时属于高风险部署，
+必须按 §6.1 建立防火墙/VPN/反向代理认证边界。
 
 ### `GET /api/health`
 
 ```json
-{"ok":true,"app":"qqbot-studio-ai-assistant","version":"0.1.0"}
+{"ok":true,"app":"qqbot-studio-ai-assistant","version":"0.2.0"}
 ```
 
 ### `GET /api/status`
@@ -224,12 +291,14 @@ python3 assistant.py --help
 {
   "ok": true,
   "app": "qqbot-studio-ai-assistant",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "configured": true,
   "key_source": "independent",
   "key_error": "",
   "model": "deepseek-flash",
-  "endpoint": "https://api.deepseek.com/v1/chat/completions"
+  "endpoint": "https://api.deepseek.com/v1/chat/completions",
+  "host": "127.0.0.1",
+  "public_host": ""
 }
 ```
 
@@ -257,7 +326,9 @@ python3 assistant.py --help
 ```
 
 未配置 Key 返回 503，上游失败返回 502/504，请求错误返回 400。服务端不持久化聊天记录。
-对浏览器请求校验同源 `Origin`，限制本机 `Host`，不返回 CORS 允许头。
+服务会严格解析 `Host` 并校验实际监听端口；默认回环模式拒绝公网 Host。显式
+`host=0.0.0.0` 时允许合法公网 IP/域名，但仍要求带实际端口，浏览器 `Origin` 必须与
+`Host` 的 hostname/端口一致。不返回 CORS 允许头。
 
 ---
 
@@ -287,6 +358,9 @@ bash "$EXT_DIR/install.sh"
 - 主项目不接收、不记录、不传参 B 的 API Key；Key 生命周期归 B 本地配置。
 - 主项目不自动推断实例 Key 复用；必须由用户在 B 配置/安装选项显式选择。
 - 更新时不得覆盖 `<QQBOT_STUDIO_HOME>/ai-assistant/` 下的 B 配置。
+- 主项目如提供 `host=0.0.0.0` + `public_host`，可直接写入 B 配置；B 接受该组合，
+  但主项目必须把 `0.0.0.0` 视为显式高风险选择，默认仍写 `127.0.0.1`。
+- 主项目不得把 `public_host` 当成监听地址或访问认证；实际监听地址是 `host`。
 
 ### 8.3 主控制台
 
@@ -294,11 +368,12 @@ bash "$EXT_DIR/install.sh"
 
 | 能力 | 契约 |
 |---|---|
-| 入口 | `http://127.0.0.1:8766/`（B 配置改端口时跟随） |
+| 入口 | 默认 `http://127.0.0.1:8766/`；host=0.0.0.0 时用 `public_host:port`（缺 public_host 则提示手动） |
 | 安装 | 目标路径不存在时 clone；存在时不重复 clone |
 | 状态 | 调 `GET /api/health`；失败只显示未运行，不影响 A |
 | 更新 | 扩展目录内 `git pull --ff-only`；失败保留旧版本并提示 |
 | 启动 | Linux 用 B launcher/systemd；Windows 用 .cmd/计划任务 |
+| 风险提示 | host=0.0.0.0 时控制台必须显示“无认证、禁止裸奔公网、防火墙/VPN/反代认证” |
 | 卸载 | 调用 `install.sh --uninstall` / `install.ps1 -Uninstall`，默认保留 B 数据 |
 | 隔离 | A 不依赖 B 安装、配置、网络状态 |
 
@@ -323,9 +398,11 @@ python3 -m unittest discover -s tests -v
 bash -n install.sh
 ```
 
-mock 测试覆盖：配置 `0600`、独立/实例 Key、路径越界、`/api/status`、`/api/chat`、
-固定 `deepseek-flash`、`stream=false`、Key 不出现在响应/错误、上游 401 脱敏、
-拒绝上游重定向、Host/Origin/Content-Type/输入校验、CSP 等安全头。测试不访问外网、不消耗 token。
+共 **24 个** mock 测试，覆盖：配置 `0600`、独立/实例 Key、路径越界、`/api/status`、
+`/api/chat`、固定 `deepseek-flash`、`stream=false`、Key 不出现在响应/错误、上游 401
+脱敏、拒绝上游重定向、Host/Origin/Content-Type/输入校验、CSP 等安全头。公网模式还验证
+`0.0.0.0` 绑定、默认回环拒绝公网 Host、公网 Host/Origin 接受、错误端口/畸形 Host/
+不一致 Origin 拒绝、启动警告不含 Key。测试不访问外网、不消耗 token。
 
 GitHub Actions 在 Ubuntu 和 Windows 上运行 Python 3.10/3.12 的 mock 测试；
 Linux 和 Windows 还会执行安装器 smoke test（创建配置/启动器、运行 `--version`、
@@ -343,9 +420,13 @@ Linux 和 Windows 还会执行安装器 smoke test（创建配置/启动器、�
   字段依据 AstrBot v4.29 结构，升级后需复核。
 - `deepseek-flash` 是否对目标账号可用、DeepSeek 接口是否变化，需要用户真实 Key 验证。
 - Windows 是登录计划任务，不是完整 Windows Service。
-- 无内置鉴权、速率限制、内容审核、对话持久化或 TLS 终止。不要暴露公网。
+- `host=0.0.0.0` 公网模式仅在本机 TCP socket 上用合成 Host/Origin 做 mock 验证；
+  未在真实公网 IP、云安全组、防火墙、VPN 或认证反向代理后做端到端验证。
+- 无内置鉴权、速率限制、内容审核、对话持久化或 TLS 终止。公网绑定必须置于
+  防火墙/VPN/带认证反代之后，禁止裸奔公网。
 
-真实联调时先确认只监听本机，再用低风险测试消息并检查 DeepSeek 用量。不要提交真实 Key。
+真实联调时优先保持默认回环，用低风险测试消息并检查 DeepSeek 用量。若必须测试公网绑定，
+先设置最小来源范围的防火墙规则和认证边界，测试后立即关闭。不要提交真实 Key。
 
 ---
 
@@ -356,13 +437,18 @@ Linux 和 Windows 还会执行安装器 smoke test（创建配置/启动器、�
 - Key 只被发送到固定的 `https://api.deepseek.com/v1/chat/completions`，模型固定
   `deepseek-flash`；上游 HTTP 重定向被拒绝，但未额外固定 DNS 解析结果。
 - 用户聊天内容会发送给 DeepSeek；不要输入新的密钥或其他敏感信息。
-- 服务无认证。默认回环绑定、Host/Origin 校验、JSON Content-Type、CSP、no-CORS
-  可降低浏览器跨站风险，但不能替代网络隔离。禁止端口转发或反向代理公开它。
+- 服务无认证。默认回环绑定才是最安全配置。显式 `0.0.0.0` 会把 API/UI 暴露到
+  所有网卡；Host/Origin 校验不是身份认证，无法阻止能直接连接端口的客户端。
+- 公网部署必须使用防火墙/云安全组限制来源，或置于 VPN/启用认证与 TLS 的反向代理后；
+  **禁止裸奔公网**。反向代理还需保留 Host/Origin 的 hostname+实际端口一致性。
+- Host/Origin 校验、JSON Content-Type、CSP、no-CORS 可降低浏览器跨站风险，
+  但不能替代网络隔离或认证。
 - 访问日志不含请求体和请求头，也不记录查询串；上游错误响应会替换 Key 与常见
   `sk-*`/`Bearer`/`api_key=` 形式后再返回。
 - 复用实例 Key 时，B 每次聊天读取实例 `cmd_config.json`；B 不写回、不复制该 Key，
   但 Key 会进入 B 进程内存并用于 DeepSeek 请求。
-- 上游错误、Windows ACL、代理环境变量、DNS/TLS 解析等仍属未做端到端验证的边界。
+- 上游错误、Windows ACL、代理环境变量、DNS/TLS 解析，以及真实公网/防火墙/
+  VPN/认证反代的组合仍属未做端到端验证的边界。
 
 ---
 
@@ -396,7 +482,11 @@ Remove-Item -LiteralPath "$HOME\.local\share\qqbot-studio\extensions\ai-assistan
 - **端口占用**：编辑 `port` 后重启；已有配置不会因再次 `--port` 被覆盖。
 - **systemd 不可用**：WSL/容器常见；直接运行启动器。
 - **PowerShell 执行策略**：用 `powershell -ExecutionPolicy Bypass -File .\install.ps1 ...`。
-- **能公网访问吗**：不支持，也不应做。当前没有认证/TLS/滥用防护。
+- **能公网访问吗**：默认不能，`127.0.0.1` 只能本机/SSH 隧道。若显式配置
+  `host=0.0.0.0` 则可以可达，但这是高风险选项：无认证/TLS/滥用防护，
+  **禁止裸奔公网**，必须使用防火墙/安全组、VPN 或带认证的反向代理。
+- **Host 校验 421 / Origin 403**：确认请求 Host 带实际监听端口；公网模式 Origin
+  的 hostname 和端口必须与 Host 一致。反向代理改写了 Host/Origin 或端口会触发拒绝。
 
 ## 13. 许可证
 

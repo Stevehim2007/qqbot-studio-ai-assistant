@@ -13,6 +13,8 @@ UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 UNIT_NAME="qqbot-ai-assistant.service"
 UNIT_PATH="$UNIT_DIR/$UNIT_NAME"
 PORT=8766
+BIND_HOST=""
+PUBLIC_HOST=""
 INSTANCE_ID=""
 INSTALL_SERVICE=0
 CONFIGURE_KEY=0
@@ -24,6 +26,8 @@ usage() {
   cat <<'EOF'
 用法：./install.sh [选项]
   --port PORT           初始化端口（默认 8766；已有配置不会被覆盖）
+  --host HOST           监听地址：默认 127.0.0.1；仅可显式设为 0.0.0.0（高风险）
+  --public-host HOST    公网模式显示用域名/IP（不含协议和端口；不改变绑定）
   --instance-id ID      首次安装时显式复用该实例的 AstrBot DeepSeek Key
   --configure-key       安装后交互式输入独立 Key（不回显，不进入命令历史）
   --install-service     安装并启动 systemd 用户服务（可选）
@@ -33,6 +37,8 @@ usage() {
 环境变量：QQBOT_STUDIO_HOME / QQBOT_AI_ASSISTANT_HOME /
           QQBOT_AI_ASSISTANT_CONFIG / PYTHON
 B 是独立可选子项目；A 保持默认。不会自动扫描实例 Key，也不打印 Key。
+警告：host=0.0.0.0 且服务没有内置用户认证。禁止裸奔公网；
+必须使用防火墙/安全组限制来源，或通过 VPN、带认证的反向代理访问。
 EOF
 }
 die() { printf '错误：%s\n' "$*" >&2; exit 1; }
@@ -40,6 +46,8 @@ die() { printf '错误：%s\n' "$*" >&2; exit 1; }
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --port) [ "$#" -ge 2 ] || die "--port 缺少参数"; PORT="$2"; shift 2 ;;
+    --host) [ "$#" -ge 2 ] || die "--host 缺少参数"; BIND_HOST="$2"; shift 2 ;;
+    --public-host) [ "$#" -ge 2 ] || die "--public-host 缺少参数"; PUBLIC_HOST="$2"; shift 2 ;;
     --instance-id) [ "$#" -ge 2 ] || die "--instance-id 缺少参数"; INSTANCE_ID="$2"; shift 2 ;;
     --configure-key) CONFIGURE_KEY=1; shift ;;
     --install-service) INSTALL_SERVICE=1; shift ;;
@@ -89,14 +97,16 @@ fi
   || die "需要 Python 3.10+：$PYTHON"
 
 mkdir -p -- "$DATA_DIR" "$BIN_DIR"
-if [ -n "$INSTANCE_ID" ]; then
-  "$PYTHON" "$SCRIPT_DIR/assistant.py" --config "$CONFIG_PATH" --studio-home "$STUDIO_HOME" \
-    --init-config --port "$PORT" --instance-id "$INSTANCE_ID"
-else
-  "$PYTHON" "$SCRIPT_DIR/assistant.py" --config "$CONFIG_PATH" --studio-home "$STUDIO_HOME" \
-    --init-config --port "$PORT"
-fi
+INIT_ARGS=(--config "$CONFIG_PATH" --studio-home "$STUDIO_HOME" --init-config --port "$PORT")
+if [ -n "$BIND_HOST" ]; then INIT_ARGS+=(--host "$BIND_HOST"); fi
+if [ -n "$PUBLIC_HOST" ]; then INIT_ARGS+=(--public-host "$PUBLIC_HOST"); fi
+if [ -n "$INSTANCE_ID" ]; then INIT_ARGS+=(--instance-id "$INSTANCE_ID"); fi
+"$PYTHON" "$SCRIPT_DIR/assistant.py" "${INIT_ARGS[@]}"
 chmod 600 -- "$CONFIG_PATH" 2>/dev/null || true
+# Read only non-secret display fields; never read or print api_key here.
+CONFIG_HOST="$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["host"])' "$CONFIG_PATH")"
+CONFIG_PUBLIC_HOST="$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("public_host", ""))' "$CONFIG_PATH")"
+CONFIG_PORT="$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["port"])' "$CONFIG_PATH")"
 
 shell_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 {
@@ -148,9 +158,23 @@ fi
 echo
 echo "AI 助手 B 安装完成。"
 echo "  启动命令：$LAUNCHER"
-echo "  访问地址：http://127.0.0.1:$PORT/"
 echo "  配置文件：$CONFIG_PATH（权限 600；API Key 为本地明文存储）"
 echo "  固定模型：deepseek-flash"
+if [ "$CONFIG_HOST" = "0.0.0.0" ]; then
+  echo "  警告：已选择公网绑定 0.0.0.0，且服务无内置认证。禁止裸奔公网。"
+  echo "        必须使用防火墙/安全组限制来源，或通过 VPN、带认证的反向代理访问。"
+  if [ -n "$CONFIG_PUBLIC_HOST" ]; then
+    URL_HOST="$CONFIG_PUBLIC_HOST"
+    case "$URL_HOST" in *:*) URL_HOST="[$URL_HOST]" ;; esac
+    echo "  对外显示地址：http://$URL_HOST:$CONFIG_PORT/（public_host 不改变监听与安全边界）"
+  else
+    echo "  访问地址：请使用服务器公网 IP/域名:$CONFIG_PORT/（0.0.0.0 不是可访问地址）"
+  fi
+else
+  URL_HOST="$CONFIG_HOST"
+  case "$URL_HOST" in *:*) URL_HOST="[$URL_HOST]" ;; esac
+  echo "  访问地址：http://$URL_HOST:$CONFIG_PORT/"
+fi
 if [ -n "$INSTANCE_ID" ]; then
   echo "  Key 来源：显式复用实例 $INSTANCE_ID 的 AstrBot 配置（运行时只读）"
 elif [ "$CONFIGURE_KEY" -eq 0 ]; then

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import ipaddress
 import json
 import os
 import re
@@ -23,12 +24,14 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 APP_NAME = "qqbot-studio-ai-assistant"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.2.0"
 MODEL = "deepseek-flash"
 DEEPSEEK_CHAT_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_PORT = 8766
 DEFAULT_TIMEOUT = 120
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+PUBLIC_BIND_HOST = "0.0.0.0"
+ALLOWED_BIND_HOSTS = LOOPBACK_HOSTS | {PUBLIC_BIND_HOST}
 KEY_SOURCES = ("independent", "instance")
 INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 MAX_BODY = 512 * 1024
@@ -83,6 +86,7 @@ def default_config(port: int = DEFAULT_PORT) -> dict[str, Any]:
     return {
         "version": 1,
         "host": "127.0.0.1",
+        "public_host": "",
         "port": int(port),
         "key_source": "independent",
         "api_key": "",
@@ -104,13 +108,119 @@ def _int_value(value: Any, name: str, low: int, high: int) -> int:
     return result
 
 
+def _normalize_hostname(value: str) -> str | None:
+    """Return a safe canonical DNS/IP host name, or None if malformed."""
+    host = str(value or "").strip().lower()
+    if not host or len(host) > 512 or not host.isascii() or "%" in host:
+        return None
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if not host or "[" in host or "]" in host:
+        return None
+    try:
+        return ipaddress.ip_address(host).compressed
+    except ValueError:
+        pass
+    if any(char in host for char in ":/\\?#@,;"):
+        return None
+    if host.endswith("."):
+        host = host[:-1]
+    if not host or len(host) > 253:
+        return None
+    labels = host.split(".")
+    label_re = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+    if any(not label or len(label) > 63 or not label_re.fullmatch(label) for label in labels):
+        return None
+    # Reject malformed IPv4-looking names such as 999.999.999.999.
+    if re.fullmatch(r"[0-9.]+", host):
+        return None
+    return host
+
+
+def _validate_public_host(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    normalized = _normalize_hostname(raw)
+    if not normalized:
+        raise ConfigError("public_host 必须是纯 IP 或域名，不能包含协议、路径、端口或非法字符")
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        pass
+    else:
+        if address.is_unspecified or address.is_multicast:
+            raise ConfigError("public_host 不能是 0.0.0.0、:: 或组播地址")
+    return normalized
+
+
+def _parse_host_header(raw: str) -> tuple[str, int | None] | None:
+    """Parse a strict Host header. Return (canonical host, explicit port)."""
+    if not raw or len(raw) > 512 or raw != raw.strip() or not raw.isascii():
+        return None
+    if any(ord(char) < 33 or ord(char) > 126 for char in raw):
+        return None
+    if any(char in raw for char in "/\\?#@,;"):
+        return None
+    port_text: str | None = None
+    if raw.startswith("["):
+        closing = raw.find("]")
+        if closing < 0 or raw.find("]", closing + 1) >= 0:
+            return None
+        host_text = raw[1:closing]
+        try:
+            address = ipaddress.ip_address(host_text)
+        except ValueError:
+            return None
+        if address.version != 6:
+            return None
+        normalized = address.compressed
+        rest = raw[closing + 1:]
+        if rest:
+            if not rest.startswith(":"):
+                return None
+            port_text = rest[1:]
+            if not port_text:
+                return None
+    else:
+        if raw.count(":") > 1:
+            return None
+        host_text, separator, candidate_port = raw.partition(":")
+        if separator:
+            port_text = candidate_port
+            if not port_text:
+                return None
+        normalized = _normalize_hostname(host_text)  # type: ignore[assignment]
+        if normalized is None or ":" in normalized:
+            return None
+    port: int | None = None
+    if port_text is not None:
+        if not port_text.isdigit():
+            return None
+        try:
+            port = int(port_text)
+        except ValueError:
+            return None
+        if not 1 <= port <= 65_535:
+            return None
+    return normalized, port
+
+
+def _format_url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
 def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
     config = default_config()
     config.update(dict(raw))
     host = str(config.get("host") or "").strip().lower()
-    if host not in LOOPBACK_HOSTS:
-        raise ConfigError("host 只能使用本机回环地址 127.0.0.1 / localhost / ::1")
+    if host not in ALLOWED_BIND_HOSTS:
+        raise ConfigError(
+            "host 只能使用本机回环地址 127.0.0.1 / localhost / ::1，"
+            "或显式设置为 0.0.0.0（高风险，无认证）"
+        )
     config["host"] = host
+    config["public_host"] = _validate_public_host(config.get("public_host"))
     config["port"] = _int_value(config.get("port"), "port", 1, 65_535)
     config["timeout_seconds"] = _int_value(
         config.get("timeout_seconds"), "timeout_seconds", 5, 600
@@ -183,10 +293,20 @@ def write_json_private(path: Path, payload: Mapping[str, Any]) -> None:
             pass
 
 
-def ensure_config(path: Path, port: int = DEFAULT_PORT, instance_id: str = "") -> tuple[dict[str, Any], bool]:
+def ensure_config(
+    path: Path,
+    port: int = DEFAULT_PORT,
+    instance_id: str = "",
+    host: str | None = None,
+    public_host: str = "",
+) -> tuple[dict[str, Any], bool]:
     if path.exists():
         return load_config(path), False
     config = default_config(port)
+    if host is not None:
+        config["host"] = host
+    if public_host:
+        config["public_host"] = public_host
     if instance_id:
         if not INSTANCE_ID_RE.fullmatch(instance_id):
             raise ConfigError("instance_id 格式无效")
@@ -460,6 +580,7 @@ class AssistantApp:
             "ok": True, "app": APP_NAME, "version": APP_VERSION,
             "configured": configured, "key_source": config["key_source"],
             "key_error": error, "model": MODEL, "endpoint": DEEPSEEK_CHAT_URL,
+            "host": config["host"], "public_host": config["public_host"],
         }
 
     def chat(self, message: str, history: Sequence[Mapping[str, str]]) -> str:
@@ -475,8 +596,11 @@ class AssistantHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], app: AssistantApp) -> None:
+    def __init__(
+        self, address: tuple[str, int], app: AssistantApp, bind_host: str | None = None
+    ) -> None:
         self.app = app
+        self.bind_host = str(bind_host or address[0]).strip().lower()
         super().__init__(address, Handler)
 
 
@@ -524,42 +648,60 @@ class Handler(BaseHTTPRequestHandler):
         self._json(status, {"ok": False, "error": safe_message(message)})
 
     def _host_parts(self) -> tuple[str, int | None] | None:
-        raw = self.headers.get("Host", "")
-        if not raw:
+        values = self.headers.get_all("Host", [])
+        if len(values) != 1:
             return None
-        try:
-            parts = urlsplit("//" + raw)
-            return (parts.hostname or "").lower(), parts.port
-        except ValueError:
-            return None
+        return _parse_host_header(values[0])
 
     def _actual_port(self) -> int:
         return int(self.server.server_address[1])  # type: ignore[attr-defined]
+
+    def _public_bind(self) -> bool:
+        return str(getattr(self.server, "bind_host", "")).lower() == PUBLIC_BIND_HOST
 
     def _host_ok(self) -> bool:
         parts = self._host_parts()
         if not parts:
             return False
         host, port = parts
-        return host in LOOPBACK_HOSTS and (port if port is not None else 80) == self._actual_port()
+        if (port if port is not None else 80) != self._actual_port():
+            return False
+        if not self._public_bind():
+            return host in LOOPBACK_HOSTS
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return True
+        return not (address.is_unspecified or address.is_multicast)
 
     def _origin_ok(self) -> bool:
-        origin = self.headers.get("Origin")
-        if not origin:
+        origins = self.headers.get_all("Origin", [])
+        if not origins:
             return True
+        if len(origins) != 1:
+            return False
+        origin = origins[0]
         host_parts = self._host_parts()
         if not self._host_ok() or not host_parts:
             return False
         try:
             parsed = urlsplit(origin)
-            port = parsed.port
+            origin_port = parsed.port
         except ValueError:
             return False
-        return (
-            parsed.scheme == "http"
-            and (parsed.hostname or "").lower() == host_parts[0]
-            and (port if port is not None else 80) == self._actual_port()
-        )
+        if parsed.username is not None or parsed.password is not None:
+            return False
+        if parsed.scheme not in (("http", "https") if self._public_bind() else ("http",)):
+            return False
+        if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+            return False
+        origin_host = _normalize_hostname(parsed.hostname or "")
+        if origin_host is None:
+            return False
+        effective_port = origin_port
+        if effective_port is None:
+            effective_port = 443 if parsed.scheme == "https" else 80
+        return origin_host == host_parts[0] and effective_port == self._actual_port()
 
     def _read_json(self) -> Any:
         if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
@@ -657,12 +799,43 @@ def create_server(config_path: Path | str, studio_home: Path | str | None = None
     app = AssistantApp(config_path, studio_home, api_url, client)
     config = load_config(app.config_path)
     bind_host = str(host if host is not None else config["host"]).strip().lower()
-    if bind_host not in LOOPBACK_HOSTS:
-        raise ConfigError("服务只能绑定本机回环地址")
+    if bind_host not in ALLOWED_BIND_HOSTS:
+        raise ConfigError(
+            "服务只能绑定本机回环地址，或显式绑定 0.0.0.0（高风险，无认证）"
+        )
     bind_port = config["port"] if port is None else int(port)
     if not 0 <= bind_port <= 65_535:
         raise ConfigError("监听端口无效")
-    return AssistantHTTPServer((bind_host, bind_port), app)
+    return AssistantHTTPServer((bind_host, bind_port), app, bind_host=bind_host)
+
+
+def startup_messages(config: Mapping[str, Any], listen_host: str, listen_port: int) -> list[str]:
+    """Return safe startup output; never include secrets."""
+    display_port = int(listen_port)
+    if str(config.get("host") or "") == PUBLIC_BIND_HOST or str(listen_host) == PUBLIC_BIND_HOST:
+        messages = [
+            f"{APP_NAME} {APP_VERSION} 已启动，实际监听 {listen_host}:{display_port}（所有网卡）。",
+        ]
+        public_host = str(config.get("public_host") or "").strip()
+        if public_host:
+            messages.append(
+                f"public_host 访问地址：http://{_format_url_host(public_host)}:{display_port}/"
+            )
+        else:
+            messages.append(
+                "未配置 public_host；请使用服务器公网 IP 或域名访问，"
+                "不要把 0.0.0.0 当作可访问地址。"
+            )
+        messages.extend([
+            "警告：AI 助手 B 没有内置用户认证，禁止裸奔公网。",
+            "必须使用防火墙/安全组限制来源，或通过 VPN、带认证的反向代理访问。",
+            "Host/Origin 校验不是身份认证，不能替代网络访问控制。",
+        ])
+        return messages
+    return [
+        f"{APP_NAME} {APP_VERSION} 已启动：http://{_format_url_host(listen_host)}:{display_port}/",
+        "服务仅监听本机回环地址；远端访问请使用 SSH 隧道或安全代理。",
+    ]
 
 
 def serve(config_path: Path, studio_home: Path) -> int:
@@ -672,8 +845,9 @@ def serve(config_path: Path, studio_home: Path) -> int:
         print(f"启动失败：{exc}", file=sys.stderr)
         return 1
     config = load_config(config_path)
-    shown_port = int(server.server_address[1])
-    print(f"{APP_NAME} {APP_VERSION} 已启动：http://127.0.0.1:{shown_port}/")
+    listen_host, shown_port = server.server_address[:2]
+    for message in startup_messages(config, str(listen_host), int(shown_port)):
+        print(message)
     print(f"模型固定为 {MODEL}；配置文件：{config_path}")
     try:
         resolve_key(config, studio_home)
@@ -701,6 +875,16 @@ def parser() -> argparse.ArgumentParser:
     group.add_argument("--check", action="store_true", help="检查配置和 Key，不启动服务")
     group.add_argument("--print-config-path", action="store_true", help="输出默认配置路径")
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help="初始化端口，默认 8766")
+    p.add_argument(
+        "--host",
+        default=None,
+        help="初始化监听地址：默认 127.0.0.1；显式 0.0.0.0 为高风险公网绑定",
+    )
+    p.add_argument(
+        "--public-host",
+        default="",
+        help="公网模式下用于显示链接的纯域名/IP（不含协议和端口）",
+    )
     p.add_argument("--instance-id", default="", help="初始化时显式复用该实例的 Key")
     return p
 
@@ -714,14 +898,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.init_config:
         try:
-            config, created = ensure_config(config_path, args.port, args.instance_id)
+            config, created = ensure_config(
+                config_path,
+                args.port,
+                args.instance_id,
+                host=args.host,
+                public_host=args.public_host,
+            )
         except ConfigError as exc:
             print(f"初始化失败：{exc}", file=sys.stderr)
             return 1
         print(("已创建配置文件：" if created else "配置文件已存在，未覆盖：") + str(config_path))
-        if not created and args.instance_id:
-            print("提示：已有配置不会自动改为复用实例，请手动编辑 key_source / instance_id。")
-        print(f"Key 来源：{config['key_source']}；端口：{config['port']}；固定模型：{MODEL}")
+        if not created and (args.instance_id or args.host is not None or args.public_host):
+            print("提示：已有配置不会自动覆盖；如需修改 host/public_host/instance_id 请编辑配置文件。")
+        print(
+            f"Key 来源：{config['key_source']}；监听：{config['host']}；"
+            f"端口：{config['port']}；固定模型：{MODEL}"
+        )
+        if config["public_host"]:
+            print(f"公网显示地址：{_format_url_host(config['public_host'])}")
+        if config["host"] == PUBLIC_BIND_HOST:
+            print("警告：已选择 0.0.0.0 公网绑定且服务无认证，禁止裸奔公网；必须使用防火墙/VPN/反代认证。")
         if config["key_source"] == "instance":
             print(f"复用实例 ID：{config['instance_id']}")
         elif not config["api_key"]:

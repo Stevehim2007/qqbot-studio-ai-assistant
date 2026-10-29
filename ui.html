@@ -24,7 +24,7 @@
 <div id="chat" aria-live="polite"><div id="empty-state" class="empty"><strong>有什么可以帮你？</strong><p>消息仅在本次浏览器会话中保留。对话内容会发送到 DeepSeek 以生成回复。</p><p>使用前请在本机配置文件中设置 API Key；也可在明确配置后复用某个已部署实例的 Key。</p></div></div>
 <div class="composer"><div class="input-wrap"><textarea id="message" rows="2" maxlength="12000" placeholder="输入消息…（Enter 发送，Shift + Enter 换行）" aria-label="消息"></textarea><button id="send" type="button">发送</button></div><div class="composer-foot"><span class="hint">固定模型 deepseek-flash · Key 不会显示在此页面</span><button id="clear" class="ghost" type="button">清空对话</button></div></div>
 </section>
-<footer>本地服务默认仅监听 127.0.0.1。请勿直接暴露到公网。</footer>
+<footer>默认仅监听 127.0.0.1。显式绑定 0.0.0.0 时服务无认证，禁止裸奔公网；必须使用防火墙/VPN/带认证反向代理。</footer>
 </main>
 <script>
 (()=>{"use strict";const chatEl=document.getElementById("chat"),emptyEl=document.getElementById("empty-state"),inputEl=document.getElementById("message"),sendEl=document.getElementById("send"),clearEl=document.getElementById("clear"),badgeEl=document.getElementById("status-badge"),statusTextEl=document.getElementById("status-text"),noticeEl=document.getElementById("notice");let history=[],sending=false;

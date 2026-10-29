@@ -1,8 +1,50 @@
 ﻿#requires -Version 5.1
 <#
+.SYNOPSIS
 QQ Bot Studio AI Assistant B - Windows installer (PowerShell 5.1+).
-Creates a private local config and launcher, and optionally a current-user logon
-scheduled task. API keys are never embedded in the launcher/task/command output.
+
+.DESCRIPTION
+Creates a private local config and launcher, and optionally a current-user
+logon scheduled task. API keys are never embedded in the launcher, task action,
+or command output.
+
+The default listen host is 127.0.0.1. BindHost=0.0.0.0 is an explicit high-risk
+public binding: this service has NO built-in user authentication. Never expose
+it naked to the internet. Restrict access with firewall/security groups, or use
+a VPN or an authenticated reverse proxy.
+
+.PARAMETER Port
+Listen port. Default 8766. Existing config files are not overwritten.
+
+.PARAMETER BindHost
+Listen address for a new config. Default 127.0.0.1. Only loopback addresses or
+the explicit high-risk value 0.0.0.0 are accepted.
+
+.PARAMETER PublicHost
+Optional public IP/domain used only for display URLs in public mode. Do not
+include a scheme, path, or port. It does not change binding or authentication.
+
+.PARAMETER InstanceId
+Explicitly reuse the DeepSeek key from the named QQ Bot Studio instance.
+
+.PARAMETER ConfigureKey
+Interactively write an independent API key without echoing it.
+
+.PARAMETER InstallService
+Create and start a current-user logon scheduled task (not a Windows Service).
+
+.PARAMETER Uninstall
+Remove the scheduled task and launcher. Keep B data unless -Purge is supplied.
+
+.PARAMETER Purge
+With -Uninstall, also delete B's data directory.
+
+.EXAMPLE
+.\install.ps1 -Port 8766
+
+.EXAMPLE
+.\install.ps1 -BindHost 0.0.0.0 -PublicHost bot.example.com
+WARNING: no authentication; use a firewall/VPN/authenticated reverse proxy.
 #>
 [CmdletBinding()]
 param(
@@ -166,8 +208,16 @@ $initArgs = @(
     "--init-config",
     "--port", [string]$Port
 )
+if ($BindHost) { $initArgs += @("--host", $BindHost) }
+if ($PublicHost) { $initArgs += @("--public-host", $PublicHost) }
 if ($InstanceId) { $initArgs += @("--instance-id", $InstanceId) }
 Invoke-PythonChecked -ExtraArgs $initArgs
+
+# Read only non-secret display fields; never print api_key.
+$storedConfig = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+$ActiveBindHost = [string]$storedConfig.host
+$ActivePublicHost = [string]$storedConfig.public_host
+$ActivePort = [int]$storedConfig.port
 
 Protect-PrivatePath -LiteralPath $DataDir
 Protect-PrivatePath -LiteralPath $ConfigPath
@@ -220,9 +270,23 @@ if ($InstallService) {
 Write-Host ""
 Write-Host "AI 助手 B 安装完成。"
 Write-Host "  启动命令：$LauncherPath"
-Write-Host "  访问地址：http://127.0.0.1:$Port/"
 Write-Host "  配置文件：$ConfigPath（已设置当前用户 NTFS ACL；API Key 为本地明文存储）"
 Write-Host "  固定模型：deepseek-flash"
+if ($ActiveBindHost -eq "0.0.0.0") {
+    Write-Warning "已选择公网绑定 0.0.0.0，且服务无内置用户认证。禁止裸奔公网。"
+    Write-Warning "必须使用防火墙/安全组限制来源，或通过 VPN、带认证的反向代理访问。"
+    if ($ActivePublicHost) {
+        $publicUrlHost = if ($ActivePublicHost.Contains(":")) { "[$ActivePublicHost]" } else { $ActivePublicHost }
+        Write-Host "  对外显示地址：http://${publicUrlHost}:${ActivePort}/（public_host 不改变监听与安全边界）"
+    }
+    else {
+        Write-Host "  访问地址：请使用服务器公网 IP/域名:${ActivePort}/（0.0.0.0 不是可访问地址）"
+    }
+}
+else {
+    $localUrlHost = if ($ActiveBindHost.Contains(":")) { "[$ActiveBindHost]" } else { $ActiveBindHost }
+    Write-Host "  访问地址：http://${localUrlHost}:${ActivePort}/"
+}
 if ($InstanceId) {
     Write-Host "  Key 来源：显式复用实例 $InstanceId 的 AstrBot 配置（运行时只读）"
 }

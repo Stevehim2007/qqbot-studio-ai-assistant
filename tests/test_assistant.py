@@ -67,11 +67,17 @@ class FakeDeepSeek:
 
 
 class RunningAssistant:
-    def __init__(self, config: Path, studio_home: Path, api_url: str) -> None:
-        self.server = assistant.create_server(config, studio_home, host="127.0.0.1", port=0, api_url=api_url)
+    def __init__(self, config: Path, studio_home: Path, api_url: str,
+                 bind_host: str = "127.0.0.1") -> None:
+        self.bind_host = bind_host
+        self.server = assistant.create_server(
+            config, studio_home, host=bind_host, port=0, api_url=api_url
+        )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
-        self.host, self.port = self.server.server_address[:2]
+        self.listen_host, self.port = self.server.server_address[:2]
+        # 0.0.0.0 is a bind address, not a destination; connect locally.
+        self.host = "127.0.0.1" if str(self.listen_host) == "0.0.0.0" else str(self.listen_host)
 
     def request(self, method: str, path: str, payload: dict[str, Any] | None = None,
                 headers: dict[str, str] | None = None) -> tuple[int, dict[str, str], bytes]:
@@ -117,6 +123,7 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(created)
         self.assertEqual(config["port"], 9876)
         self.assertEqual(config["host"], "127.0.0.1")
+        self.assertEqual(config["public_host"], "")
         self.assertEqual(config["key_source"], "independent")
         self.assertEqual(config["api_key"], "")
         if os.name != "nt":
@@ -131,10 +138,26 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(again["port"], 9011)
 
     def test_invalid_config_is_rejected(self) -> None:
-        for value in ({"host": "0.0.0.0"}, {"port": 70000}, {"key_source": "other"},
+        for value in ({"host": "192.168.1.10"}, {"host": "example.com"}, {"port": 70000},
+                      {"key_source": "other"},
                       {"key_source": "instance", "instance_id": "../escape"}):
             with self.assertRaises(assistant.ConfigError):
                 assistant.validate_config(value)
+        for public_host in ("https://example.com", "example.com:8766", "bad_host",
+                            "0.0.0.0", "::", "example.com/path"):
+            with self.assertRaises(assistant.ConfigError):
+                assistant.validate_config({"public_host": public_host})
+
+    def test_public_bind_config_and_public_host_are_explicit(self) -> None:
+        config = assistant.validate_config(
+            {"host": "0.0.0.0", "public_host": "Assistant.Example.com", "port": 8766}
+        )
+        self.assertEqual(config["host"], "0.0.0.0")
+        self.assertEqual(config["public_host"], "assistant.example.com")
+        # Defaults must remain safe loopback.
+        self.assertEqual(assistant.default_config()["host"], "127.0.0.1")
+        ipv6 = assistant.validate_config({"public_host": "[2001:db8::1]"})
+        self.assertEqual(ipv6["public_host"], "2001:db8::1")
 
     def test_permissions_are_tightened_and_key_not_in_status(self) -> None:
         write_config(self.config, api_key=SECRET)
@@ -231,7 +254,8 @@ class HttpTests(unittest.TestCase):
         status, headers, raw = self.running.request("GET", "/")
         self.assertEqual(status, 200)
         text = raw.decode("utf-8")
-        for expected in ("QQ Bot Studio · AI 助手 B", "不替代离线知识库助手 A", "deepseek-flash"):
+        for expected in ("QQ Bot Studio · AI 助手 B", "不替代离线知识库助手 A",
+                         "deepseek-flash", "禁止裸奔公网"):
             self.assertIn(expected, text)
         self.assertIn("content-security-policy", headers)
         self.assertIn("text/html", headers["content-type"])
@@ -291,6 +315,14 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(status, 400)
         status, _headers, _raw = self.running.request("GET", "/api/status", headers={"Host": "evil.example"})
         self.assertEqual(status, 421)
+        status, _headers, _raw = self.running.request(
+            "GET", "/api/status",
+            headers={"Host": f"assistant.example.com:{self.running.port}"})
+        self.assertEqual(status, 421)
+        status, _headers, _raw = self.running.request(
+            "GET", "/api/status",
+            headers={"Host": f"203.0.113.10:{self.running.port}"})
+        self.assertEqual(status, 421)
         status, _headers, _raw = self.running.request("POST", "/api/chat", {"message": "ok"},
                                                       headers={"Origin": "http://evil.example"})
         self.assertEqual(status, 403)
@@ -318,6 +350,116 @@ class HttpTests(unittest.TestCase):
         self.assertNotIn(SECRET, json.dumps(data))
 
 
+class PublicBindingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.studio = self.root / ".local/share/qqbot-studio"
+        self.config = self.root / "ai-assistant/config.json"
+        write_config(
+            self.config,
+            api_key=SECRET,
+            host="0.0.0.0",
+            public_host="assistant.example.com",
+        )
+        self.fake = FakeDeepSeek(reply="公网模式 mock 回复")
+        self.running = RunningAssistant(
+            self.config, self.studio, self.fake.url, bind_host="0.0.0.0"
+        )
+
+    def tearDown(self) -> None:
+        self.running.close()
+        self.fake.close()
+        self.tmp.cleanup()
+
+    def _host(self, hostname: str = "assistant.example.com") -> str:
+        return f"{hostname}:{self.running.port}"
+
+    def test_create_server_binds_all_interfaces(self) -> None:
+        self.assertEqual(str(self.running.listen_host), "0.0.0.0")
+
+    def test_public_host_ip_ipv6_and_origin_are_accepted(self) -> None:
+        for hostname in ("assistant.example.com", "203.0.113.10", "[2001:db8::1]"):
+            status, _headers, data = self.running.json_request(
+                "GET", "/api/health", headers={"Host": self._host(hostname)}
+            )
+            self.assertEqual(status, 200, (hostname, data))
+
+        host = self._host()
+        status, _headers, data = self.running.json_request(
+            "POST", "/api/chat", {"message": "公网 HTTP"},
+            headers={"Host": host, "Origin": f"http://{host}"},
+        )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["reply"], "公网模式 mock 回复")
+        self.assertNotIn(SECRET, json.dumps(data, ensure_ascii=False))
+
+        status, _headers, data = self.running.json_request(
+            "POST", "/api/chat", {"message": "公网 HTTPS"},
+            headers={"Host": host, "Origin": f"https://{host}"},
+        )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(len(self.fake.calls), 2)
+
+    def test_public_mode_status_does_not_leak_key(self) -> None:
+        status, _headers, data = self.running.json_request(
+            "GET", "/api/status", headers={"Host": self._host()}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(data["host"], "0.0.0.0")
+        self.assertEqual(data["public_host"], "assistant.example.com")
+        self.assertNotIn(SECRET, json.dumps(data, ensure_ascii=False))
+
+    def test_public_mode_rejects_bad_hosts_and_wrong_port(self) -> None:
+        wrong_port = self.running.port + 1 if self.running.port < 65535 else self.running.port - 1
+        bad_hosts = [
+            f"assistant.example.com:{wrong_port}",
+            "assistant.example.com",
+            f"0.0.0.0:{self.running.port}",
+            f"bad host:{self.running.port}",
+            f"assistant.example.com/path:{self.running.port}",
+            f"assistant.example.com:{self.running.port}:extra",
+            f"[::1:{self.running.port}",
+            f"user@assistant.example.com:{self.running.port}",
+        ]
+        for host in bad_hosts:
+            status, _headers, _data = self.running.request(
+                "GET", "/api/health", headers={"Host": host}
+            )
+            self.assertEqual(status, 421, host)
+
+    def test_public_mode_rejects_mismatched_origin(self) -> None:
+        host = self._host()
+        bad_origins = [
+            f"http://other.example.com:{self.running.port}",
+            f"http://assistant.example.com:{self.running.port + 1}",
+            f"ftp://assistant.example.com:{self.running.port}",
+            f"http://assistant.example.com:{self.running.port}/path",
+            "null",
+        ]
+        for origin in bad_origins:
+            status, _headers, _data = self.running.json_request(
+                "POST", "/api/chat", {"message": "不应发送"},
+                headers={"Host": host, "Origin": origin},
+            )
+            self.assertEqual(status, 403, origin)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_public_startup_messages_warn_and_never_include_key(self) -> None:
+        config = assistant.load_config(self.config)
+        text = "\n".join(assistant.startup_messages(config, "0.0.0.0", 8766))
+        self.assertIn("实际监听 0.0.0.0:8766", text)
+        self.assertIn("assistant.example.com:8766", text)
+        for warning in ("没有内置用户认证", "禁止裸奔公网", "防火墙", "VPN", "反向代理"):
+            self.assertIn(warning, text)
+        self.assertNotIn(SECRET, text)
+        loopback = assistant.startup_messages(
+            {**config, "host": "127.0.0.1", "public_host": ""}, "127.0.0.1", 8766
+        )
+        self.assertTrue(any("本机回环" in line for line in loopback))
+        self.assertFalse(any("禁止裸奔公网" in line for line in loopback))
+
+
 class ValidationTests(unittest.TestCase):
     def test_validate_and_redact(self) -> None:
         message, history = assistant.validate_chat_request({
@@ -338,6 +480,19 @@ class ValidationTests(unittest.TestCase):
             with mock.patch("builtins.print") as output:
                 self.assertEqual(assistant.main(["--config", str(config), "--init-config"]), 0)
             self.assertNotIn(SECRET, " ".join(str(call) for call in output.call_args_list))
+
+            public_config = Path(tmp) / "public-config.json"
+            with mock.patch("builtins.print") as output:
+                self.assertEqual(assistant.main([
+                    "--config", str(public_config), "--init-config",
+                    "--host", "0.0.0.0", "--public-host", "assistant.example.com",
+                ]), 0)
+            public_output = " ".join(str(call) for call in output.call_args_list)
+            self.assertIn("监听：0.0.0.0", public_output)
+            self.assertIn("禁止裸奔公网", public_output)
+            loaded_public = assistant.load_config(public_config)
+            self.assertEqual(loaded_public["host"], "0.0.0.0")
+            self.assertEqual(loaded_public["public_host"], "assistant.example.com")
             assistant.set_independent_key(config, SECRET)
             with mock.patch("builtins.print") as output:
                 rc = assistant.main(["--config", str(config), "--check"])
