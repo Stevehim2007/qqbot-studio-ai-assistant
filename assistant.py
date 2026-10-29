@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 APP_NAME = "qqbot-studio-ai-assistant"
 APP_VERSION = "0.1.0"
@@ -324,6 +324,16 @@ def safe_message(value: Any, secret: str = "", limit: int = 500) -> str:
     return text[:limit]
 
 
+class _NoRedirectHandler(HTTPRedirectHandler):
+    """Refuse redirects so the Authorization header can only go to the fixed URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        raise HTTPError(req.full_url, code, "DeepSeek redirect refused", headers, fp)
+
+
+_OPENER = build_opener(_NoRedirectHandler())
+
+
 class DeepSeekClient:
     def __init__(self, api_url: str = DEEPSEEK_CHAT_URL) -> None:
         self.api_url = api_url
@@ -357,13 +367,16 @@ class DeepSeekClient:
             },
         )
         try:
-            with urlopen(request, timeout=timeout) as response:
+            with _OPENER.open(request, timeout=timeout) as response:
                 raw = response.read(MAX_UPSTREAM + 1)
         except HTTPError as exc:
             try:
-                body = exc.read(MAX_UPSTREAM_ERROR)
-            except Exception:
-                body = b""
+                if 300 <= int(exc.code) < 400:
+                    raise DeepSeekError("DeepSeek 上游返回了不允许的重定向") from None
+                try:
+                    body = exc.read(MAX_UPSTREAM_ERROR)
+                except Exception:
+                    body = b""
             finally:
                 exc.close()
             detail = self._detail(body, api_key)

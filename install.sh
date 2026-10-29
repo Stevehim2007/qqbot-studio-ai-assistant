@@ -129,7 +129,6 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=$(systemd_quote "$PYTHON") $(systemd_quote "$SCRIPT_DIR/assistant.py") --config $(systemd_quote "$CONFIG_PATH") --studio-home $(systemd_quote "$STUDIO_HOME")
-WorkingDirectory=$(systemd_quote "$SCRIPT_DIR")
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=3

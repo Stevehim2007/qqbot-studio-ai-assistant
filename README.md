@@ -325,7 +325,7 @@ bash -n install.sh
 
 mock 测试覆盖：配置 `0600`、独立/实例 Key、路径越界、`/api/status`、`/api/chat`、
 固定 `deepseek-flash`、`stream=false`、Key 不出现在响应/错误、上游 401 脱敏、
-Host/Origin/Content-Type/输入校验、CSP 等安全头。测试不访问外网、不消耗 token。
+拒绝上游重定向、Host/Origin/Content-Type/输入校验、CSP 等安全头。测试不访问外网、不消耗 token。
 
 GitHub Actions 在 Ubuntu 和 Windows 上运行 Python 3.10/3.12 的 mock 测试，
 并在 Windows 上做 PowerShell 语法解析检查（若可运行）。
@@ -351,7 +351,7 @@ GitHub Actions 在 Ubuntu 和 Windows 上运行 Python 3.10/3.12 的 mock 测试
 - Key 是本地配置文件中的**明文**；`0600`/NTFS ACL 只限制其他普通 OS 用户。
   当前用户、root/Administrator、被入侵的本机仍可读取。B 不提供加密保险库。
 - Key 只被发送到固定的 `https://api.deepseek.com/v1/chat/completions`，模型固定
-  `deepseek-flash`；上游重定向由 urllib 默认处理，未额外固定解析 IP。
+  `deepseek-flash`；上游 HTTP 重定向被拒绝，但未额外固定 DNS 解析结果。
 - 用户聊天内容会发送给 DeepSeek；不要输入新的密钥或其他敏感信息。
 - 服务无认证。默认回环绑定、Host/Origin 校验、JSON Content-Type、CSP、no-CORS
   可降低浏览器跨站风险，但不能替代网络隔离。禁止端口转发或反向代理公开它。
@@ -359,7 +359,7 @@ GitHub Actions 在 Ubuntu 和 Windows 上运行 Python 3.10/3.12 的 mock 测试
   `sk-*`/`Bearer`/`api_key=` 形式后再返回。
 - 复用实例 Key 时，B 每次聊天读取实例 `cmd_config.json`；B 不写回、不复制该 Key，
   但 Key 会进入 B 进程内存并用于 DeepSeek 请求。
-- 上游错误和 HTTP 重定向行为、Windows ACL、代理环境变量等仍属未做端到端验证的边界。
+- 上游错误、Windows ACL、代理环境变量、DNS/TLS 解析等仍属未做端到端验证的边界。
 
 ---
 

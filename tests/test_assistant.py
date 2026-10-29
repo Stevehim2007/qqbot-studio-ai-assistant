@@ -296,6 +296,17 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertEqual(self.fake.calls, [])
 
+    def test_upstream_redirect_is_refused_without_leaking_key(self) -> None:
+        self.fake.close()
+        self.fake = FakeDeepSeek(status=302, raw_body=b"")
+        self.running.close()
+        self.running = RunningAssistant(self.config, self.studio, self.fake.url)
+        status, _headers, data = self.running.json_request("POST", "/api/chat", {"message": "重定向测试"})
+        self.assertEqual(status, 502)
+        rendered = json.dumps(data, ensure_ascii=False)
+        self.assertNotIn(SECRET, rendered)
+        self.assertIn("不允许的重定向", rendered)
+
     def test_same_origin_and_health(self) -> None:
         origin = f"http://127.0.0.1:{self.running.port}"
         status, _headers, data = self.running.json_request(

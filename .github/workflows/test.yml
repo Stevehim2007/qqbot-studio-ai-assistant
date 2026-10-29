@@ -41,3 +41,37 @@ jobs:
             $errors | Format-List
             exit 1
           }
+      - name: Linux installer smoke test
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP_HOME="$(mktemp -d)"
+          export HOME="$TMP_HOME"
+          unset QQBOT_STUDIO_HOME QQBOT_AI_ASSISTANT_HOME QQBOT_AI_ASSISTANT_CONFIG || true
+          ./install.sh --port 18765
+          CONFIG="$HOME/.local/share/qqbot-studio/ai-assistant/config.json"
+          test "$(stat -c '%a' "$CONFIG")" = "600"
+          "$HOME/.local/bin/qqbot-ai-assistant" --version
+          ./install.sh --uninstall --purge
+          test ! -e "$HOME/.local/share/qqbot-studio/ai-assistant"
+      - name: Windows installer smoke test
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:QQBOT_STUDIO_HOME = Join-Path $env:RUNNER_TEMP "qqbot-studio-home"
+          $env:QQBOT_AI_ASSISTANT_HOME = Join-Path $env:QQBOT_STUDIO_HOME "ai-assistant"
+          $env:QQBOT_AI_ASSISTANT_CONFIG = Join-Path $env:QQBOT_AI_ASSISTANT_HOME "config.json"
+          .\install.ps1 -Port 18765
+          if (-not (Test-Path -LiteralPath $env:QQBOT_AI_ASSISTANT_CONFIG)) { throw "install.ps1 did not create config.json" }
+          $config = Get-Content -LiteralPath $env:QQBOT_AI_ASSISTANT_CONFIG -Raw | ConvertFrom-Json
+          if ($config.port -ne 18765) { throw "unexpected port in config" }
+          if ($config.key_source -ne "independent") { throw "unexpected key source" }
+          $launcher = Join-Path $HOME ".local\bin\qqbot-ai-assistant.cmd"
+          if (-not (Test-Path -LiteralPath $launcher)) { throw "install.ps1 did not create launcher" }
+          & $launcher --version
+          if ($LASTEXITCODE -ne 0) { throw "launcher failed with exit code $LASTEXITCODE" }
+          .\install.ps1 -Uninstall
+          .\install.ps1 -Uninstall -Purge
+          if (Test-Path -LiteralPath $env:QQBOT_STUDIO_HOME) { throw "purge left data directory behind" }
