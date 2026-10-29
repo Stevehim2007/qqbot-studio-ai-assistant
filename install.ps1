@@ -49,6 +49,12 @@ WARNING: no authentication; use a firewall/VPN/authenticated reverse proxy.
 [CmdletBinding()]
 param(
     [ValidateRange(1, 65535)][int]$Port = 8766,
+
+    [Alias("Host")]
+    [string]$BindHost = "",
+
+    [string]$PublicHost = "",
+
     [string]$InstanceId = "",
     [switch]$ConfigureKey,
     [switch]$InstallService,
