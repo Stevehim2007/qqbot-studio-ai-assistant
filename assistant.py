@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 APP_NAME = "qqbot-studio-ai-assistant"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 MODEL = "deepseek-flash"
 DEEPSEEK_CHAT_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_PORT = 8766
@@ -45,10 +45,82 @@ MAX_MESSAGE = 12_000
 MAX_HISTORY = 20
 MAX_TOTAL_CHAT = 80_000
 MAX_KEY = 4_096
-MAX_PROMPT = 4_000
-DEFAULT_PROMPT = (
-    "你是 QQ Bot Studio 的生成式 AI 使用助手。请用简洁、准确的中文回答。"
-    "不要声称自己已经执行了未实际执行的操作；信息不足时请明确说明。"
+DEFAULT_MAX_CONTEXT_MESSAGES = 6
+DEFAULT_MAX_CONTEXT_CHARS = 3_000
+DEFAULT_MAX_OUTPUT_TOKENS = 450
+PROJECT_SCOPE_REFUSAL = "我只回答 QQ Bot Studio 相关问题。"
+PROJECT_SCOPE_LABEL = "仅回答 QQ Bot Studio 相关问题"
+TOKEN_MODE_LABEL = "省 token 简短模式"
+SYSTEM_PROMPT_READ_ONLY_NOTICE = (
+    "系统提示词由代码内置且只读；配置字段 system_prompt 已忽略"
+)
+PROJECT_SCOPE_PREFIX = (
+    "你是 QQ Bot Studio 项目专用助手。"
+    "只回答 QQ Bot Studio、AstrBot、SnowLuma、OneBot、DeepSeek 在本项目中的"
+    "安装、配置、运行、插件、记忆、表情、端口、更新和故障排查问题。"
+    "无关的闲聊、代码题、新闻、其它软件问题只回复：我只回答 QQ Bot Studio 相关问题。"
+    "不得编造项目功能；不能执行电脑控制、不能读取文件，也不能调用外部工具；"
+    "信息不足时先说明。回答尽量短、可执行，优先给命令、路径和检查步骤，"
+    "不要重复大段文档。"
+)
+PLATFORM_PROMPTS = {
+    "linux": (
+        "\n\n【平台固定摘要：Linux/Ubuntu】\n"
+        "使用 install.sh/console.sh/start.sh 和 Docker Compose；"
+        "数据在 ~/.local/share/qqbot-studio；后台常用 screen；"
+        "管理服务常监听 0.0.0.0；实例相关端口按 5000-10000 分配，"
+        "noVNC 用于浏览器远程扫码。"
+        "AstrBot 对接 QQ/OneBot，SnowLuma 提供 OneBot v11/WebUI；"
+        "通过管理控制台和 /assistant 操作；插件开关、AI 工具白名单、"
+        "更新与安全边界以当前项目文档为准。版本差异：Linux 主项目与 Windows "
+        "双 EXE 发行版分开维护，升级前核对当前版本与迁移说明。"
+    ),
+    "windows": (
+        "\n\n【平台固定摘要：Windows】\n"
+        "优先 Docker Desktop + WSL2 + Linux containers；"
+        "数据默认 %LOCALAPPDATA%\\QQBotStudio\\data；使用 PowerShell。"
+        "两个 EXE：QQBotStudioWindows.exe（Docker/WSL2 稳定版）和 "
+        "QQBotStudioWindowsNative.exe（Native bootstrap/POC，不等同完整 Native 管理）。"
+        "Native bootstrap 与 Docker 后端不同：Docker 版首次扫码走 noVNC；"
+        "Native 官方路径是在本机桌面 QQ 窗口扫码，noVNC 仅可选且共享整个桌面、"
+        "不做每实例隔离。AstrBot/SnowLuma/OneBot 关系、管理控制台、/assistant、"
+        "插件开关、AI 工具白名单、更新与安全边界按 Windows 版文档。"
+        "版本差异：两个 EXE 同版本线发布，Docker 版为稳定版，Native 为 POC。"
+    ),
+}
+SUPPORTED_PLATFORMS = ("auto", "linux", "windows")
+PROJECT_ANCHOR_TERMS = (
+    "qq bot studio", "qqbot-studio", "qqbot studio", "qqbotstudio", "qq bot",
+    "qq机器人", "qq 机器人", "astrbot", "snowluma", "onebot", "deepseek",
+    "novnc", "no vnc", "/assistant", "assistant 页面", "管理控制台",
+    "工具白名单",
+)
+PROJECT_TOPIC_TERMS = (
+    "qq bot studio", "qqbot-studio", "qqbot studio", "qqbotstudio", "qq bot",
+    "qq机器人", "qq 机器人", "astrbot", "snowluma", "onebot", "deepseek",
+    "novnc", "no vnc", "/assistant", "assistant 页面", "管理控制台",
+    "工具白名单", "ai 工具", "插件", "记忆", "表情", "扫码", "二维码", "登录态",
+    "实例", "容器", "docker", "wsl", "screen", "ubuntu", "linux", "windows",
+    "powershell", "端口", "更新", "安装", "配置", "部署", "启动", "停止",
+    "重启", "卸载", "故障", "排查", "日志", "报错", "镜像", "防火墙",
+    "安全组", "反向代理", "vpn", "0.0.0.0", "127.0.0.1", "5000-10000",
+    "8765", "8766", "api key", "密钥", "模型", "token", "版本", "命令",
+    "路径", "脚本", "exe", "控制台", "数据目录", "ssh 隧道", "远程访问",
+    "备份", "恢复",
+)
+UNRELATED_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
+    r"(天气|气温|下雨|晴天|空气质量)",
+    r"(新闻|时事|股票|彩票|汇率)",
+    r"(讲个?笑话|说个?笑话|故事|唱歌|写首诗|作诗)",
+    r"(电影|音乐|旅游|菜谱|星座|游戏|电视剧)",
+    r"(leetcode|快速排序|冒泡排序|二分查找|算法题|代码题|数学题|作业)",
+    r"(写|实现|解释|调试).{0,20}(代码|算法|函数|程序)",
+    r"(python|javascript|java|c\+\+|golang|rust).{0,30}(代码|算法|函数|程序|怎么写)",
+    r"(excel|word|photoshop|微信|钉钉|steam|office|chrome|edge|抖音|淘宝|支付宝|微博)",
+))
+GREETING_RE = re.compile(
+    r"^(你好|您好|hi|hello|hey|嗨|在吗|谢谢|多谢|好的|早安|晚安)[\s!！。,.，?？]*$",
+    re.IGNORECASE,
 )
 SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9._-]{8,}"),
@@ -96,7 +168,14 @@ def default_config(port: int = DEFAULT_PORT) -> dict[str, Any]:
         "api_key": "",
         "instance_id": "",
         "timeout_seconds": DEFAULT_TIMEOUT,
-        "system_prompt": DEFAULT_PROMPT,
+        "platform": "auto",
+        "project_scope_enforced": True,
+        "max_context_messages": DEFAULT_MAX_CONTEXT_MESSAGES,
+        "max_context_chars": DEFAULT_MAX_CONTEXT_CHARS,
+        "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
+        # Legacy read-only placeholder: kept for old-config compatibility,
+        # never used to build prompts.
+        "system_prompt": "",
     }
 
 
@@ -214,6 +293,77 @@ def _format_url_host(host: str) -> str:
     return f"[{host}]" if ":" in host and not host.startswith("[") else host
 
 
+def resolve_platform(value: Any = "auto") -> str:
+    configured = str(value or "auto").strip().lower()
+    if configured not in SUPPORTED_PLATFORMS:
+        raise ConfigError("platform 只能是 auto、linux 或 windows")
+    if configured == "auto":
+        return "windows" if os.name == "nt" else "linux"
+    return configured
+
+
+def build_system_prompt(config: Mapping[str, Any]) -> tuple[str, str]:
+    """Return the read-only, code-defined system prompt for the resolved platform.
+
+    ``system_prompt`` in the local config is retained only for old-config
+    compatibility and is deliberately ignored. Users cannot override scope,
+    safety, or platform instructions.
+    """
+    platform = resolve_platform(config.get("platform"))
+    return platform, PROJECT_SCOPE_PREFIX + PLATFORM_PROMPTS[platform]
+
+
+def _has_project_anchor(text: str) -> bool:
+    normalized = str(text or "").casefold()
+    return any(term in normalized for term in PROJECT_ANCHOR_TERMS)
+
+
+def _has_project_topic(text: str) -> bool:
+    normalized = str(text or "").casefold()
+    return any(term in normalized for term in PROJECT_TOPIC_TERMS)
+
+
+def is_project_scope_question(message: str, history: Sequence[Mapping[str, str]]) -> bool:
+    """Conservative local gate; the fixed system prompt is the semantic backstop."""
+    normalized = str(message or "").strip().casefold()
+    if not normalized:
+        return False
+    # Specific project names always win, so project questions may mention code or tools.
+    if _has_project_anchor(normalized):
+        return True
+    if GREETING_RE.fullmatch(normalized):
+        return False
+    if any(pattern.search(normalized) for pattern in UNRELATED_PATTERNS):
+        return False
+    # Generic project operations (ports/install/plugins/...) are allowed.
+    if _has_project_topic(normalized):
+        return True
+    # Short follow-ups such as "那接下来怎么办？" are in scope only with project history.
+    context = "\n".join(str(item.get("content") or "") for item in history)
+    return _has_project_anchor(context) or _has_project_topic(context)
+
+
+def trim_chat_history(
+    history: Sequence[Mapping[str, str]], max_messages: int, max_chars: int
+) -> list[dict[str, str]]:
+    """Keep only recent context, truncating to both message and character limits."""
+    if max_messages <= 0 or max_chars <= 0:
+        return []
+    selected = list(history)[-int(max_messages):]
+    remaining = int(max_chars)
+    kept_reversed: list[dict[str, str]] = []
+    for item in reversed(selected):
+        if remaining <= 0:
+            break
+        content = str(item.get("content") or "")
+        if len(content) > remaining:
+            content = ("…" + content[-(remaining - 1):]) if remaining > 1 else content[-remaining:]
+        kept_reversed.append({"role": str(item["role"]), "content": content})
+        remaining -= len(content)
+    kept_reversed.reverse()
+    return kept_reversed
+
+
 def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
     config = default_config()
     config.update(dict(raw))
@@ -239,10 +389,26 @@ def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
         raise ConfigError("api_key 格式异常")
     if config["instance_id"] and not INSTANCE_ID_RE.fullmatch(config["instance_id"]):
         raise ConfigError("instance_id 只能包含字母、数字、点、下划线和连字符")
-    prompt = str(config.get("system_prompt") or DEFAULT_PROMPT).strip() or DEFAULT_PROMPT
-    if len(prompt) > MAX_PROMPT:
-        raise ConfigError(f"system_prompt 不能超过 {MAX_PROMPT} 字符")
-    config["system_prompt"] = prompt
+    platform = str(config.get("platform") or "auto").strip().lower()
+    if platform not in SUPPORTED_PLATFORMS:
+        raise ConfigError("platform 只能是 auto、linux 或 windows")
+    config["platform"] = platform
+    if config.get("project_scope_enforced") is not True:
+        raise ConfigError("project_scope_enforced 必须为 true；项目范围限制不能关闭")
+    config["project_scope_enforced"] = True
+    config["max_context_messages"] = _int_value(
+        config.get("max_context_messages"), "max_context_messages", 0, 20
+    )
+    config["max_context_chars"] = _int_value(
+        config.get("max_context_chars"), "max_context_chars", 1, 12_000
+    )
+    config["max_output_tokens"] = _int_value(
+        config.get("max_output_tokens"), "max_output_tokens", 350, 500
+    )
+    # Legacy field only. Keep it when present for old-config compatibility,
+    # but never expose it in new templates or use it in prompts.
+    if "system_prompt" in config:
+        config["system_prompt"] = str(config.get("system_prompt") or "").strip()
     return config
 
 
@@ -303,6 +469,7 @@ def ensure_config(
     instance_id: str = "",
     host: str | None = None,
     public_host: str = "",
+    platform: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     if path.exists():
         return load_config(path), False
@@ -311,6 +478,8 @@ def ensure_config(
         config["host"] = host
     if public_host:
         config["public_host"] = public_host
+    if platform is not None:
+        config["platform"] = platform
     if instance_id:
         if not INSTANCE_ID_RE.fullmatch(instance_id):
             raise ConfigError("instance_id 格式无效")
@@ -478,10 +647,25 @@ class DeepSeekClient:
         detail = safe_message(detail, secret, 300).strip()
         return f"：{detail}" if detail else ""
 
-    def complete(self, api_key: str, messages: Sequence[Mapping[str, str]], timeout: int) -> str:
+    def complete(
+        self,
+        api_key: str,
+        messages: Sequence[Mapping[str, str]],
+        timeout: int,
+        max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    ) -> str:
         request = Request(
             self.api_url,
-            data=json.dumps({"model": MODEL, "messages": list(messages), "stream": False}, ensure_ascii=False).encode("utf-8"),
+            data=json.dumps(
+                {
+                    "model": MODEL,
+                    "messages": list(messages),
+                    "stream": False,
+                    "temperature": 0.2,
+                    "max_tokens": int(max_tokens),
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
             method="POST",
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -585,15 +769,41 @@ class AssistantApp:
             "configured": configured, "key_source": config["key_source"],
             "key_error": error, "model": MODEL, "endpoint": DEEPSEEK_CHAT_URL,
             "host": config["host"], "public_host": config["public_host"],
+            "platform": resolve_platform(config["platform"]),
+            "platform_config": config["platform"],
+            "project_scope_enforced": config["project_scope_enforced"],
+            "project_scope": "project_only",
+            "scope_notice": PROJECT_SCOPE_LABEL,
+            "token_mode": "concise",
+            "token_mode_notice": TOKEN_MODE_LABEL,
+            "max_context_messages": config["max_context_messages"],
+            "max_context_chars": config["max_context_chars"],
+            "max_output_tokens": config["max_output_tokens"],
+            "system_prompt_read_only": True,
+            "system_prompt_ignored": bool(config.get("system_prompt")),
+            "system_prompt_notice": SYSTEM_PROMPT_READ_ONLY_NOTICE,
         }
 
     def chat(self, message: str, history: Sequence[Mapping[str, str]]) -> str:
         config = self.config()
+        context = trim_chat_history(
+            history,
+            int(config["max_context_messages"]),
+            int(config["max_context_chars"]),
+        )
+        if config["project_scope_enforced"] and not is_project_scope_question(message, context):
+            return PROJECT_SCOPE_REFUSAL
         key = resolve_key(config, self.studio_home)
-        messages = [{"role": "system", "content": config["system_prompt"]}]
-        messages.extend({"role": item["role"], "content": item["content"]} for item in history)
+        _platform, system_prompt = build_system_prompt(config)
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend({"role": item["role"], "content": item["content"]} for item in context)
         messages.append({"role": "user", "content": message})
-        return self.client.complete(key.key, messages, int(config["timeout_seconds"]))
+        return self.client.complete(
+            key.key,
+            messages,
+            int(config["timeout_seconds"]),
+            max_tokens=int(config["max_output_tokens"]),
+        )
 
 
 class AssistantHTTPServer(ThreadingHTTPServer):
@@ -847,7 +1057,23 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "服务器处理聊天请求时发生内部错误")
             return
-        self._json(HTTPStatus.OK, {"ok": True, "reply": reply, "model": MODEL})
+        response: dict[str, Any] = {
+            "ok": True,
+            "reply": reply,
+            "model": MODEL,
+            "scope_refused": reply == PROJECT_SCOPE_REFUSAL,
+        }
+        try:
+            config = self.app.config()
+            response.update({
+                "platform": resolve_platform(config["platform"]),
+                "project_scope_enforced": config["project_scope_enforced"],
+                "token_mode": "concise",
+                "max_output_tokens": config["max_output_tokens"],
+            })
+        except ConfigError:
+            pass
+        self._json(HTTPStatus.OK, response)
 
 
 def create_server(config_path: Path | str, studio_home: Path | str | None = None,
@@ -1207,6 +1433,18 @@ def diagnose(config_path: Path | str, studio_home: Path | str | None = None) -> 
         "ready_for_chat": bool(technical_ok and configured and health["ok"]),
         "app": APP_NAME,
         "version": APP_VERSION,
+        "platform": resolve_platform(config["platform"]),
+        "platform_config": config["platform"],
+        "project_scope_enforced": config["project_scope_enforced"],
+        "project_scope": "project_only",
+        "scope_notice": PROJECT_SCOPE_LABEL,
+        "token_mode": "concise",
+        "max_context_messages": config["max_context_messages"],
+        "max_context_chars": config["max_context_chars"],
+        "max_output_tokens": config["max_output_tokens"],
+        "system_prompt_read_only": True,
+        "system_prompt_ignored": bool(config.get("system_prompt")),
+        "system_prompt_notice": SYSTEM_PROMPT_READ_ONLY_NOTICE,
         "config_path": str(path),
         "config_exists": existed,
         "configured": configured,
@@ -1285,6 +1523,12 @@ def parser() -> argparse.ArgumentParser:
         default="",
         help="公网模式下用于显示链接的纯域名/IP（不含协议和端口）",
     )
+    p.add_argument(
+        "--platform",
+        choices=SUPPORTED_PLATFORMS,
+        default=None,
+        help="初始化平台：auto（默认）/ linux / windows",
+    )
     p.add_argument("--instance-id", default="", help="初始化时显式复用该实例的 Key")
     return p
 
@@ -1304,19 +1548,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.instance_id,
                 host=args.host,
                 public_host=args.public_host,
+                platform=args.platform,
             )
         except ConfigError as exc:
             print(f"初始化失败：{exc}", file=sys.stderr)
             return 1
         print(("已创建配置文件：" if created else "配置文件已存在，未覆盖：") + str(config_path))
-        if not created and (args.instance_id or args.host is not None or args.public_host):
-            print("提示：已有配置不会自动覆盖；如需修改 host/public_host/instance_id 请编辑配置文件。")
+        if not created and (
+            args.instance_id or args.host is not None or args.public_host or args.platform
+        ):
+            print("提示：已有配置不会自动覆盖；如需修改 host/public_host/platform/instance_id 请编辑配置文件。")
         print(
             f"Key 来源：{config['key_source']}；监听：{config['host']}；"
             f"端口：{config['port']}；固定模型：{MODEL}"
         )
+        print(
+            f"回答范围：仅项目问题（固定只读提示）；平台：{config['platform']}；"
+            f"上下文≤{config['max_context_messages']}条/"
+            f"{config['max_context_chars']}字符；max_output_tokens={config['max_output_tokens']}"
+        )
         if config["public_host"]:
             print(f"公网显示地址：{_format_url_host(config['public_host'])}")
+        print("项目范围/平台系统提示词由代码内置且只读；配置 system_prompt 会被忽略。")
         if config["host"] == PUBLIC_BIND_HOST:
             print("警告：已选择 0.0.0.0 公网绑定且服务无认证，禁止裸奔公网；必须使用防火墙/VPN/反代认证。")
         if config["key_source"] == "instance":

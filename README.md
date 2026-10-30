@@ -2,12 +2,13 @@
 
 这是 QQ Bot Studio 主项目之外的**独立子项目**。它用 Python 标准库提供本地 HTTP
 服务与中文 Web UI，通过 DeepSeek OpenAI-compatible API 提供可选的生成式 AI 聊天能力。
-默认只监听回环地址；也支持用户**显式选择**高风险公网绑定。
+默认只监听回环地址；也支持用户**显式选择**高风险公网绑定。B 只回答 QQ Bot Studio
+项目相关问题，按 Linux/Windows 使用代码内置的固定短摘要，并限制上下文与输出 token。
 
 > **A 默认保留；B 可选。** 主项目已有的离线知识库助手 A 不因 B 改变。B 不替代 A，
 > 代码也不进入主仓库。未安装或 B 配置/联网失败时，A 必须继续可用。
 
-- 当前版本：`0.3.0`
+- 当前版本：`0.4.0`
 - 固定模型：`deepseek-flash`
 - 固定上游：`https://api.deepseek.com/v1/chat/completions`
 - 运行依赖：Python 3.10+，无第三方 Python 包
@@ -19,7 +20,7 @@
 | | 助手 A（主项目现有） | 助手 B（本仓库） |
 |---|---|---|
 | 默认状态 | **默认安装/保留** | **可选安装**，默认不装 |
-| 定位 | 离线知识库问答/内置控制台 | 在线生成式 AI 聊天 |
+| 定位 | 离线知识库问答/内置控制台 | 仅项目范围的在线生成式 AI 聊天 |
 | Token | 不消耗 | 消耗用户自己的 DeepSeek Key |
 | 外部 API | 无 | DeepSeek |
 | 代码 | 主项目仓库 | 独立仓库 `qqbot-studio-ai-assistant` |
@@ -37,6 +38,12 @@ B 失败不得阻塞 A。
 - 公网模式支持 `public_host` 显示域名/IP，但 `public_host` 不是认证或防火墙。
 - 中文 Web UI：Enter 发送、Shift+Enter 换行、清空浏览器内对话。
 - 模型和上游地址固定，网页/配置不能把 Key 导向其他域名。
+- **项目范围固定且只读**：只回答本项目/AstrBot/SnowLuma/OneBot/DeepSeek 相关问题；
+  无关问题固定回复“我只回答 QQ Bot Studio 相关问题。”
+- **平台差异化**：`platform=auto` 默认按运行平台，或锁定 `linux` / `windows`；
+  两类平台使用代码内置的固定短摘要，不把整份 README 放进 prompt。
+- **省 token**：固定系统前缀、最近最多 6 条上下文、上下文字符上限、
+  输出 `max_tokens=350-500`；不重复大段文档。
 - 本地 JSON 配置，Linux/POSIX 权限强制 `0600`。
 - 支持独立 DeepSeek Key；也支持用户在配置中**显式**复用某个已部署实例的 Key。
 - 不自动扫描实例，不自动复制实例 Key。
@@ -206,7 +213,12 @@ Windows 显式公网绑定（高风险）：
   "api_key": "",
   "instance_id": "",
   "timeout_seconds": 120,
-  "system_prompt": "你是 QQ Bot Studio 的生成式 AI 使用助手。"
+  "platform": "auto",
+  "project_scope_enforced": true,
+  "max_context_messages": 6,
+  "max_context_chars": 3000,
+  "max_output_tokens": 450,
+  "system_prompt": ""
 }
 ```
 
@@ -220,7 +232,14 @@ Windows 显式公网绑定（高风险）：
 - `api_key`：独立 Key；`instance` 模式下不读取此字段。
 - `instance_id`：`instance` 模式必填；仅允许字母/数字/`.`/`_`/`-`。
 - `timeout_seconds`：5–600。
-- `system_prompt`：最多 4000 字符。
+- `platform`：`auto`（默认，按运行平台选择）、`linux` 或 `windows`。
+- `project_scope_enforced`：必须为 `true`，项目范围限制**不能关闭**。
+- `max_context_messages`：0–20，默认 6；只发送最近的历史消息。
+- `max_context_chars`：1–12000，默认 3000；按最近历史内容字符数截断。
+- `max_output_tokens`：350–500，默认 450；作为 DeepSeek `max_tokens` 发送。
+- `system_prompt`：**只读兼容占位字段**，保留用于旧配置格式；无论填写什么内容都
+  始终被忽略。项目范围、安全规则、平台摘要全部由代码内置，用户不能通过该字段覆盖
+  或关闭。新安装仍会生成空占位，但不提供任何可编辑提示词能力。
 - 模型和上游 URL **故意不可配置**。
 - 旧配置兼容：缺少 `public_host` 等新字段时使用安全默认值（`public_host=""`、host 默认
   `127.0.0.1`），不会因升级直接失败。
@@ -235,6 +254,51 @@ python3 assistant.py --config <config.json> --diagnose
 python3 assistant.py --print-config-path
 python3 assistant.py --help
 ```
+
+### 6.0 项目范围、平台摘要与省 token 模式
+
+**项目范围固定且只读。** 可回答：
+
+- QQ Bot Studio 的安装、配置、运行、更新、卸载和故障排查；
+- AstrBot / SnowLuma / OneBot / DeepSeek 在 QQ Bot Studio 中的集成、端口、
+  插件、记忆、表情、管理控制台、`/assistant`、AI 工具白名单和安全边界；
+- Linux 与 Windows 的平台差异、路径、命令和版本边界。
+
+**无关问题统一拒绝。** 闲聊、通用代码题、新闻、其它软件等固定回复：
+
+```text
+我只回答 QQ Bot Studio 相关问题。
+```
+
+本地会先做保守的明显无关预检；通过预检的问题再由固定的系统提示约束。系统提示明确
+要求不得编造项目功能、不能执行电脑控制、不能读取文件、不能调用外部工具；信息不足时
+先说明。B 本身没有电脑控制、文件读取或工具调用实现。
+
+**固定平台摘要（代码内置、简短）：**
+
+| 平台 | 摘要重点 |
+|---|---|
+| Linux/Ubuntu | Docker Compose；`~/.local/share/qqbot-studio`；`screen`；`0.0.0.0`；实例端口 `5000-10000`；noVNC |
+| Windows | Docker Desktop/WSL2；`%LOCALAPPDATA%\QQBotStudio\data`；PowerShell；Native bootstrap 与 Docker；两个 EXE；noVNC 差异 |
+
+两个平台摘要都固定包含 AstrBot/SnowLuma/OneBot 关系、管理控制台、`/assistant`、
+插件开关、AI 工具白名单、更新、安全边界和版本差异。版本差异包括：Linux 主项目与
+Windows 双 EXE 发行版分开维护；Windows 两个 EXE 同版本线发布，Docker 版为稳定版，
+Native 为 POC。`platform=auto` 默认按运行平台；显式配置可锁定平台用于排查/文档生成。
+
+**省 token：**
+
+- 系统提示以固定的公共短前缀开头，后面只追加固定的平台摘要，便于上游缓存；
+  用户 `system_prompt` 不参与拼接。
+- 历史只发送最近 `max_context_messages` 条，并受 `max_context_chars` 字符预算限制；
+  当前用户消息始终单独发送（仍受消息输入上限约束）。
+- 输出 `max_tokens` 固定在 350–500，引导回答短而可执行。
+- 不重复发送整份 README，不提供工具/电脑/网络访问。
+
+`/api/status` 会返回 `platform`、`project_scope_enforced`、`scope_notice`、
+`token_mode`、`max_context_messages`、`max_context_chars`、`max_output_tokens`、
+`system_prompt_read_only`、`system_prompt_ignored`，供主项目 `/assistant` 页面显示
+“仅回答项目问题 / 平台 / 省 token 模式”。
 
 ### 6.1 显式公网绑定（高风险，默认关闭）
 
@@ -299,6 +363,10 @@ python3 assistant.py \
 | `ready_for_chat` | `ok` 且 Key 已配置且 B 正在运行 |
 | `config_path` | 本机配置路径（不含 Key） |
 | `configured` / `key_source` / `key_error` | Key 是否就绪及来源；错误信息已脱敏 |
+| `platform` / `platform_config` | 实际解析平台 / 配置值（auto/linux/windows） |
+| `project_scope_enforced` / `scope_notice` | 固定项目范围标志与“仅回答项目问题”标签 |
+| `token_mode` / `max_*` | 省 token 模式、上下文条数/字符和输出 token 上限 |
+| `system_prompt_read_only` / `system_prompt_ignored` | 系统提示只读；配置字段是否被忽略 |
 | `host` / `port` / `public_host` | 配置值 |
 | `url` / `url_hint` | 对外 URL；公网模式未配置 public_host 时为 `null` 并提示 |
 | `listener` | 能连上 health 时显示实际 socket host/port/mode/source |
@@ -351,7 +419,7 @@ python3 assistant.py \
 {
   "ok": true,
   "app": "qqbot-studio-ai-assistant",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "listen_mode": "loopback",
   "listen_host": "127.0.0.1",
   "listen_port": 8766
@@ -367,18 +435,29 @@ python3 assistant.py \
 {
   "ok": true,
   "app": "qqbot-studio-ai-assistant",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "configured": true,
   "key_source": "independent",
   "key_error": "",
   "model": "deepseek-flash",
   "endpoint": "https://api.deepseek.com/v1/chat/completions",
   "host": "127.0.0.1",
-  "public_host": ""
+  "public_host": "",
+  "platform": "linux",
+  "platform_config": "auto",
+  "project_scope_enforced": true,
+  "scope_notice": "仅回答 QQ Bot Studio 相关问题",
+  "token_mode": "concise",
+  "max_context_messages": 6,
+  "max_context_chars": 3000,
+  "max_output_tokens": 450,
+  "system_prompt_read_only": true,
+  "system_prompt_ignored": false
 }
 ```
 
-响应中没有 API Key。
+响应中没有 API Key。`system_prompt_ignored=true` 表示旧配置中保留了该字段，但运行时
+不会使用其内容。
 
 ### `POST /api/chat`
 
@@ -398,8 +477,21 @@ python3 assistant.py \
 `user`/`assistant`。成功：
 
 ```json
-{"ok":true,"reply":"……","model":"deepseek-flash"}
+{
+  "ok": true,
+  "reply": "……",
+  "model": "deepseek-flash",
+  "scope_refused": false,
+  "platform": "linux",
+  "project_scope_enforced": true,
+  "token_mode": "concise",
+  "max_output_tokens": 450
+}
 ```
+
+无关问题会在本地直接返回 `scope_refused=true` 和固定拒绝语，不发送 DeepSeek 请求。
+项目问题才按当前配置调用上游。请求历史超过上下文限制时内部截断；旧 API 的
+`ok/reply/model` 字段保持兼容。
 
 未配置 Key 返回 503，上游失败返回 502/504，请求错误返回 400。服务端不持久化聊天记录。
 服务会严格解析 `Host` 并校验实际监听端口；默认回环模式拒绝公网 Host。显式
@@ -462,6 +554,8 @@ bash "$EXT_DIR/install.sh"
 | 入口 | 默认 `http://127.0.0.1:8766/`；host=0.0.0.0 时用 `public_host:port`（缺 public_host 则提示手动） |
 | 安装 | 目标路径不存在时 clone；存在时不重复 clone |
 | 状态 | 调 `GET /api/health`；失败只显示未运行，不影响 A |
+| 模式标签 | 从 `/api/status` 读取 `scope_notice`、`platform`、`token_mode`，显示“仅回答项目问题/平台/省 token 模式” |
+| 提示词 | `system_prompt` 必须按只读兼容字段处理；主控制台不得提供修改入口，B 会忽略该字段并使用代码内置提示 |
 | 诊断 | 调用 `python3 assistant.py --config <config> --diagnose`；解析 JSON 的 `ok`、`ready_for_chat`、`bind_test`、`health`、`host_guard`、`external_reachability` |
 | 更新 | 扩展目录内 `git pull --ff-only`；失败保留旧版本并提示 |
 | 启动 | Linux 用 B launcher/systemd；Windows 用 .cmd/计划任务 |
@@ -490,13 +584,16 @@ python3 -m unittest discover -s tests -v
 bash -n install.sh
 ```
 
-共 **30 个** mock 测试，覆盖：配置 `0600`、独立/实例 Key、旧配置缺省字段兼容、路径越界、
+共 **43 个** mock 测试，覆盖：配置 `0600`、独立/实例 Key、旧配置缺省字段兼容、路径越界、
 `/api/status`、`/api/chat`、固定 `deepseek-flash`、`stream=false`、Key 不出现在响应/错误、
 上游 401 脱敏、拒绝上游重定向、Host/Origin/Content-Type/输入校验、CSP 等安全头。
-公网模式验证 `0.0.0.0` 绑定、默认回环拒绝公网 Host、公网 Host/Origin 接受、错误端口/
-畸形 Host/不一致 Origin 拒绝、health listener 字段、421/403 可诊断错误。诊断测试验证
-loopback/公网运行、实际 listener、health、public_host_health、host_guard、端口占用、
-8765 冲突以及 `--diagnose` 输出不含 Key。测试不访问外网、不消耗 token。
+项目范围测试覆盖无关问题固定拒绝且不调用上游、项目问题正常、Linux/Windows 固定摘要
+内容与平台选择、只读 system_prompt 被忽略、未配置 Key 时无关问题仍直接拒绝、
+上下文条数/字符截断、`max_tokens` 350–500、状态模式字段和旧响应兼容。公网模式验证 `0.0.0.0` 绑定、默认回环拒绝公网 Host、公网
+Host/Origin 接受、错误端口/畸形 Host/不一致 Origin 拒绝、health listener 字段、
+421/403 可诊断错误。诊断测试验证 loopback/公网运行、实际 listener、health、
+public_host_health、host_guard、端口占用、8765 冲突以及 `--diagnose` 输出不含 Key。
+测试不访问外网、不消耗 token。
 
 GitHub Actions 在 Ubuntu 和 Windows 上运行 Python 3.10/3.12 的 mock 测试；
 Linux 和 Windows 还会执行安装器 smoke test（创建配置/启动器、运行 `--version`、
@@ -519,6 +616,10 @@ Linux 和 Windows 还会执行安装器 smoke test（创建配置/启动器、�
   云安全组、防火墙、VPN 或认证反向代理后做外部拨测。
 - 无内置鉴权、速率限制、内容审核、对话持久化或 TLS 终止。公网绑定必须置于
   防火墙/VPN/带认证反代之后，禁止裸奔公网。
+- 项目范围先用保守本地关键词预检，再由固定系统提示约束。预检可能把带项目通用词但
+  实际无关的问题交给上游，最终应由固定提示拒绝；未用真实 DeepSeek Key 做完整语义验收。
+- 固定前缀只是有利于上游缓存，不保证 DeepSeek 一定命中缓存或按缓存价格计费；
+  `max_tokens` 由上游执行情况决定。用户配置的 `system_prompt` 始终被忽略。
 
 真实联调时优先保持默认回环，用低风险测试消息并检查 DeepSeek 用量。若必须测试公网绑定，
 先设置最小来源范围的防火墙规则和认证边界，测试后立即关闭。不要提交真实 Key。

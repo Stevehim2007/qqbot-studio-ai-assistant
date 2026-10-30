@@ -7,5 +7,10 @@
   "api_key": "",
   "instance_id": "",
   "timeout_seconds": 120,
-  "system_prompt": "你是 QQ Bot Studio 的生成式 AI 使用助手。请用简洁、准确的中文回答。不要声称自己已经执行了未实际执行的操作；信息不足时请明确说明。"
+  "platform": "auto",
+  "project_scope_enforced": true,
+  "max_context_messages": 6,
+  "max_context_chars": 3000,
+  "max_output_tokens": 450,
+  "system_prompt": ""
 }

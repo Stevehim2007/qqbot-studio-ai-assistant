@@ -282,6 +282,8 @@ Write-Host "AI 助手 B 安装完成。"
 Write-Host "  启动命令：$LauncherPath"
 Write-Host "  配置文件：$ConfigPath（已设置当前用户 NTFS ACL；API Key 为本地明文存储）"
 Write-Host "  固定模型：deepseek-flash"
+Write-Host "  回答范围：仅 QQ Bot Studio 项目问题；系统提示代码内置只读"
+Write-Host "  省 token：最近少量上下文 + max_output_tokens 350-500"
 Write-Host "  启动自检：$LauncherPath --diagnose"
 if ($ActiveBindHost -eq "0.0.0.0") {
     Write-Warning "已选择公网绑定 0.0.0.0，且服务无内置用户认证。禁止裸奔公网。"

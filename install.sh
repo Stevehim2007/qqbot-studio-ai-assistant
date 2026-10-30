@@ -161,6 +161,8 @@ echo "AI 助手 B 安装完成。"
 echo "  启动命令：$LAUNCHER"
 echo "  配置文件：$CONFIG_PATH（权限 600；API Key 为本地明文存储）"
 echo "  固定模型：deepseek-flash"
+echo "  回答范围：仅 QQ Bot Studio 项目问题；系统提示代码内置只读"
+echo "  省 token：最近少量上下文 + max_output_tokens 350-500"
 echo "  启动自检：$LAUNCHER --diagnose"
 if [ "$CONFIG_HOST" = "0.0.0.0" ]; then
   echo "  警告：已选择公网绑定 0.0.0.0，且服务无内置认证。禁止裸奔公网。"

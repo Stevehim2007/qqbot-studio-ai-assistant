@@ -72,6 +72,10 @@ jobs:
           assert "bind_test" in report and "health" in report and "host_guard" in report
           assert report["external_reachability"] == "not_verified"
           assert report["security_warnings"]
+          assert report["project_scope_enforced"] is True
+          assert report["platform"] == "linux"
+          assert report["max_output_tokens"] == 450
+          assert report["system_prompt_read_only"] is True
           assert '"api_key"' not in json.dumps(report)
           PY
           ./install.sh --uninstall --purge
