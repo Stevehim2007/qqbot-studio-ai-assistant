@@ -39,6 +39,7 @@ usage() {
 B 是独立可选子项目；A 保持默认。不会自动扫描实例 Key，也不打印 Key。
 警告：host=0.0.0.0 且服务没有内置用户认证。禁止裸奔公网；
 必须使用防火墙/安全组限制来源，或通过 VPN、带认证的反向代理访问。
+安装后自检：~/.local/bin/qqbot-ai-assistant --diagnose
 EOF
 }
 die() { printf '错误：%s\n' "$*" >&2; exit 1; }
@@ -160,6 +161,7 @@ echo "AI 助手 B 安装完成。"
 echo "  启动命令：$LAUNCHER"
 echo "  配置文件：$CONFIG_PATH（权限 600；API Key 为本地明文存储）"
 echo "  固定模型：deepseek-flash"
+echo "  启动自检：$LAUNCHER --diagnose"
 if [ "$CONFIG_HOST" = "0.0.0.0" ]; then
   echo "  警告：已选择公网绑定 0.0.0.0，且服务无内置认证。禁止裸奔公网。"
   echo "        必须使用防火墙/安全组限制来源，或通过 VPN、带认证的反向代理访问。"

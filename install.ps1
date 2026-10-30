@@ -45,6 +45,10 @@ With -Uninstall, also delete B's data directory.
 .EXAMPLE
 .\install.ps1 -BindHost 0.0.0.0 -PublicHost bot.example.com
 WARNING: no authentication; use a firewall/VPN/authenticated reverse proxy.
+
+.NOTES
+After installation, run: .\qqbot-ai-assistant.cmd --diagnose
+(or use the installed launcher under $HOME\.local\bin).
 #>
 [CmdletBinding()]
 param(
@@ -278,6 +282,7 @@ Write-Host "AI 助手 B 安装完成。"
 Write-Host "  启动命令：$LauncherPath"
 Write-Host "  配置文件：$ConfigPath（已设置当前用户 NTFS ACL；API Key 为本地明文存储）"
 Write-Host "  固定模型：deepseek-flash"
+Write-Host "  启动自检：$LauncherPath --diagnose"
 if ($ActiveBindHost -eq "0.0.0.0") {
     Write-Warning "已选择公网绑定 0.0.0.0，且服务无内置用户认证。禁止裸奔公网。"
     Write-Warning "必须使用防火墙/安全组限制来源，或通过 VPN、带认证的反向代理访问。"

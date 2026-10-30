@@ -7,7 +7,7 @@
 > **A 默认保留；B 可选。** 主项目已有的离线知识库助手 A 不因 B 改变。B 不替代 A，
 > 代码也不进入主仓库。未安装或 B 配置/联网失败时，A 必须继续可用。
 
-- 当前版本：`0.2.0`
+- 当前版本：`0.3.0`
 - 固定模型：`deepseek-flash`
 - 固定上游：`https://api.deepseek.com/v1/chat/completions`
 - 运行依赖：Python 3.10+，无第三方 Python 包
@@ -214,17 +214,23 @@ Windows 显式公网绑定（高风险）：
   `0.0.0.0`（所有网卡，高风险）。不接受其他具体网卡地址。
 - `public_host`：公网模式下用于启动日志/链接显示的纯 IP 或域名。不得包含协议、路径、
   端口；它只是显示信息，**不改变监听地址、不提供认证或防火墙**。
-- `port`：1–65535；默认 `8766`，修改后重启。
+- `port`：1–65535；默认 `8766`。主项目管理端口默认是 `8765`，B 不应使用，
+  否则可能连到/撞上管理服务；旧配置若仍是 `8765` 可以加载，但 `--diagnose` 会报冲突。
 - `key_source`：`independent`（默认）或 `instance`。
 - `api_key`：独立 Key；`instance` 模式下不读取此字段。
 - `instance_id`：`instance` 模式必填；仅允许字母/数字/`.`/`_`/`-`。
 - `timeout_seconds`：5–600。
 - `system_prompt`：最多 4000 字符。
 - 模型和上游 URL **故意不可配置**。
+- 旧配置兼容：缺少 `public_host` 等新字段时使用安全默认值（`public_host=""`、host 默认
+  `127.0.0.1`），不会因升级直接失败。
 
 ```bash
 # 检查本地配置和 Key 是否就绪；不请求 DeepSeek，也不输出 Key
 python3 assistant.py --config <config.json> --check
+
+# 启动/公网接入自检：输出 JSON，不显示 Key
+python3 assistant.py --config <config.json> --diagnose
 
 python3 assistant.py --print-config-path
 python3 assistant.py --help
@@ -272,6 +278,66 @@ Windows：
 > 更推荐 VPN；若使用反向代理，必须在其上启用认证和 TLS，并保留本服务要求的
 > Host/Origin 端口一致性。
 
+### 6.2 `--diagnose` 启动/公网接入自检
+
+```bash
+python3 assistant.py \
+  --config "$HOME/.local/share/qqbot-studio/ai-assistant/config.json" \
+  --studio-home "$HOME/.local/share/qqbot-studio" \
+  --diagnose
+
+# 安装器生成启动器后也可直接：
+~/.local/bin/qqbot-ai-assistant --diagnose
+```
+
+`--diagnose` 只输出一个 UTF-8 JSON 文档，不显示 API Key，适合主控制台/脚本解析。
+主要字段：
+
+| 字段 | 含义 |
+|---|---|
+| `ok` | 技术自检是否可用：端口可 bind，或已运行的 B health 正常 |
+| `ready_for_chat` | `ok` 且 Key 已配置且 B 正在运行 |
+| `config_path` | 本机配置路径（不含 Key） |
+| `configured` / `key_source` / `key_error` | Key 是否就绪及来源；错误信息已脱敏 |
+| `host` / `port` / `public_host` | 配置值 |
+| `url` / `url_hint` | 对外 URL；公网模式未配置 public_host 时为 `null` 并提示 |
+| `listener` | 能连上 health 时显示实际 socket host/port/mode/source |
+| `bind_test` | 实际尝试 bind；`ok`、`port_in_use`、errno/error |
+| `health` | 从本机 `127.0.0.1`/适当回环地址请求 `/api/health` 的结果 |
+| `public_host_health` | 公网模式下用 `public_host` 作为 Host 的额外本地探测 |
+| `host_guard` | 用非法 Host 探测，期望 421 + `code=invalid_host` |
+| `listener_matches_config` | health 返回的实际 mode 是否与配置一致 |
+| `management_port_conflict` | 是否误用管理端口 `8765` |
+| `security_warnings` | 无认证/公网暴露/Key 未配置等安全警告 |
+| `external_reachability` | 固定为 `not_verified`（本工具不做外部拨测） |
+| `external_access_note` | 解释云安全组/防火墙/NAT 需要另行检查 |
+
+如何区分问题：
+
+- `bind_test.ok=true` + `health.ok=false`：本机端口当前可用，但 B 未启动或未监听该
+  host/port；这是**本机监听/启动问题**。
+- `bind_test.port_in_use=true` + `health.ok=true`：B 已在运行，本机 health 正常。
+- `bind_test.port_in_use=true` + `health.ok=false`：端口被其他进程/管理服务占用，
+  `/api/health` 不是 B；不要继续把它当成“网络没放行”。
+- 如果 TCP 直接拒绝连接，说明没有可达的 listener；如果连接到了 B 但 Host 不合法，
+  B 会返回 HTTP **421** 和 JSON `code=invalid_host`，不会被误报成防火墙。
+- 本机 bind/health 通过，只证明**本机监听成功**。`0.0.0.0` 不等于云安全组和主机防火墙
+  已放行；从外网访问还需确认 TCP 端口、来源 IP、NAT/端口映射和 `public_host`。
+- 本工具固定 `external_reachability=not_verified`，不会声称公网 8766 已验证。
+
+例如用户服务器公网地址为 `192.144.206.201`，应配置：
+
+```json
+{"host": "0.0.0.0", "public_host": "192.144.206.201", "port": 8766}
+```
+
+本机诊断成功仍不代表 `192.144.206.201:8766` 的外部入站已放行；必须在云安全组、主机
+防火墙/ufw/firewalld 中只对可信来源放行 TCP 8766。
+
+退出码：`0` 表示技术自检可用（端口可绑定或 B health 正常）；`1` 表示配置错误、
+管理端口冲突、端口被非 B 服务占用等需要处理的问题。聊天是否就绪请看
+`ready_for_chat`。
+
 ---
 
 ## 7. HTTP API
@@ -282,8 +348,18 @@ Windows：
 ### `GET /api/health`
 
 ```json
-{"ok":true,"app":"qqbot-studio-ai-assistant","version":"0.2.0"}
+{
+  "ok": true,
+  "app": "qqbot-studio-ai-assistant",
+  "version": "0.3.0",
+  "listen_mode": "loopback",
+  "listen_host": "127.0.0.1",
+  "listen_port": 8766
+}
 ```
+
+监听 `0.0.0.0` 时 `listen_mode` 为 `public_bind`、`listen_host` 为 `0.0.0.0`。
+本机仍可通过 `127.0.0.1:8766` + 合法 `Host: 127.0.0.1:8766` 进行 health 检查。
 
 ### `GET /api/status`
 
@@ -291,7 +367,7 @@ Windows：
 {
   "ok": true,
   "app": "qqbot-studio-ai-assistant",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "configured": true,
   "key_source": "independent",
   "key_error": "",
@@ -329,6 +405,21 @@ Windows：
 服务会严格解析 `Host` 并校验实际监听端口；默认回环模式拒绝公网 Host。显式
 `host=0.0.0.0` 时允许合法公网 IP/域名，但仍要求带实际端口，浏览器 `Origin` 必须与
 `Host` 的 hostname/端口一致。不返回 CORS 允许头。
+
+Host 不合法时返回 HTTP 421 和可诊断 JSON（示例）：
+
+```json
+{
+  "ok": false,
+  "code": "invalid_host",
+  "error": "Host 头校验失败：当前为 0.0.0.0 公网绑定：Host 必须是合法公网域名/IP，包含实际端口……",
+  "listen_mode": "public_bind",
+  "expected_port": 8766
+}
+```
+
+Origin 不一致时返回 HTTP 403、`code=invalid_origin` 和 `expected_port`。这些响应表明
+请求已经到达 B；如果完全连不上，则问题在本机 listener、端口映射或防火墙，而不是 Host 校验。
 
 ---
 
@@ -371,6 +462,7 @@ bash "$EXT_DIR/install.sh"
 | 入口 | 默认 `http://127.0.0.1:8766/`；host=0.0.0.0 时用 `public_host:port`（缺 public_host 则提示手动） |
 | 安装 | 目标路径不存在时 clone；存在时不重复 clone |
 | 状态 | 调 `GET /api/health`；失败只显示未运行，不影响 A |
+| 诊断 | 调用 `python3 assistant.py --config <config> --diagnose`；解析 JSON 的 `ok`、`ready_for_chat`、`bind_test`、`health`、`host_guard`、`external_reachability` |
 | 更新 | 扩展目录内 `git pull --ff-only`；失败保留旧版本并提示 |
 | 启动 | Linux 用 B launcher/systemd；Windows 用 .cmd/计划任务 |
 | 风险提示 | host=0.0.0.0 时控制台必须显示“无认证、禁止裸奔公网、防火墙/VPN/反代认证” |
@@ -398,11 +490,13 @@ python3 -m unittest discover -s tests -v
 bash -n install.sh
 ```
 
-共 **24 个** mock 测试，覆盖：配置 `0600`、独立/实例 Key、路径越界、`/api/status`、
-`/api/chat`、固定 `deepseek-flash`、`stream=false`、Key 不出现在响应/错误、上游 401
-脱敏、拒绝上游重定向、Host/Origin/Content-Type/输入校验、CSP 等安全头。公网模式还验证
-`0.0.0.0` 绑定、默认回环拒绝公网 Host、公网 Host/Origin 接受、错误端口/畸形 Host/
-不一致 Origin 拒绝、启动警告不含 Key。测试不访问外网、不消耗 token。
+共 **30 个** mock 测试，覆盖：配置 `0600`、独立/实例 Key、旧配置缺省字段兼容、路径越界、
+`/api/status`、`/api/chat`、固定 `deepseek-flash`、`stream=false`、Key 不出现在响应/错误、
+上游 401 脱敏、拒绝上游重定向、Host/Origin/Content-Type/输入校验、CSP 等安全头。
+公网模式验证 `0.0.0.0` 绑定、默认回环拒绝公网 Host、公网 Host/Origin 接受、错误端口/
+畸形 Host/不一致 Origin 拒绝、health listener 字段、421/403 可诊断错误。诊断测试验证
+loopback/公网运行、实际 listener、health、public_host_health、host_guard、端口占用、
+8765 冲突以及 `--diagnose` 输出不含 Key。测试不访问外网、不消耗 token。
 
 GitHub Actions 在 Ubuntu 和 Windows 上运行 Python 3.10/3.12 的 mock 测试；
 Linux 和 Windows 还会执行安装器 smoke test（创建配置/启动器、运行 `--version`、
@@ -421,7 +515,8 @@ Linux 和 Windows 还会执行安装器 smoke test（创建配置/启动器、�
 - `deepseek-flash` 是否对目标账号可用、DeepSeek 接口是否变化，需要用户真实 Key 验证。
 - Windows 是登录计划任务，不是完整 Windows Service。
 - `host=0.0.0.0` 公网模式仅在本机 TCP socket 上用合成 Host/Origin 做 mock 验证；
-  未在真实公网 IP、云安全组、防火墙、VPN 或认证反向代理后做端到端验证。
+  `--diagnose` 的 `external_reachability` 固定为 `not_verified`，未在真实公网 IP、
+  云安全组、防火墙、VPN 或认证反向代理后做外部拨测。
 - 无内置鉴权、速率限制、内容审核、对话持久化或 TLS 终止。公网绑定必须置于
   防火墙/VPN/带认证反代之后，禁止裸奔公网。
 

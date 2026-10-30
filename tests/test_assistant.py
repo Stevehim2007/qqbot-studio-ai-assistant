@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import http.client
+import io
 import json
 import os
+import socket
 import stat
 import sys
 import tempfile
@@ -66,12 +69,18 @@ class FakeDeepSeek:
         self.thread.join(timeout=5)
 
 
+def free_port(host: str = "127.0.0.1") -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
+
+
 class RunningAssistant:
     def __init__(self, config: Path, studio_home: Path, api_url: str,
-                 bind_host: str = "127.0.0.1") -> None:
+                 bind_host: str = "127.0.0.1", bind_port: int = 0) -> None:
         self.bind_host = bind_host
         self.server = assistant.create_server(
-            config, studio_home, host=bind_host, port=0, api_url=api_url
+            config, studio_home, host=bind_host, port=bind_port, api_url=api_url
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -313,12 +322,13 @@ class HttpTests(unittest.TestCase):
             self.assertEqual(status, 400, data)
         status, _headers, _raw = self.running.request("POST", "/api/chat", headers={"Content-Type": "text/plain"})
         self.assertEqual(status, 400)
-        status, _headers, _raw = self.running.request("GET", "/api/status", headers={"Host": "evil.example"})
-        self.assertEqual(status, 421)
-        status, _headers, _raw = self.running.request(
+        status, _headers, data = self.running.json_request(
             "GET", "/api/status",
             headers={"Host": f"assistant.example.com:{self.running.port}"})
         self.assertEqual(status, 421)
+        self.assertEqual(data["code"], "invalid_host")
+        self.assertEqual(data["listen_mode"], "loopback")
+        self.assertEqual(data["expected_port"], self.running.port)
         status, _headers, _raw = self.running.request(
             "GET", "/api/status",
             headers={"Host": f"203.0.113.10:{self.running.port}"})
@@ -347,6 +357,8 @@ class HttpTests(unittest.TestCase):
         status, _headers, data = self.running.json_request("GET", "/api/health")
         self.assertEqual(status, 200)
         self.assertTrue(data["ok"])
+        self.assertEqual(data["listen_mode"], "loopback")
+        self.assertEqual(data["listen_port"], self.running.port)
         self.assertNotIn(SECRET, json.dumps(data))
 
 
@@ -410,7 +422,25 @@ class PublicBindingTests(unittest.TestCase):
         self.assertEqual(data["public_host"], "assistant.example.com")
         self.assertNotIn(SECRET, json.dumps(data, ensure_ascii=False))
 
+    def test_public_mode_health_reachable_via_loopback_host(self) -> None:
+        status, _headers, data = self.running.json_request(
+            "GET", "/api/health",
+            headers={"Host": f"127.0.0.1:{self.running.port}"},
+        )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["listen_mode"], "public_bind")
+        self.assertEqual(data["listen_host"], "0.0.0.0")
+        self.assertEqual(data["listen_port"], self.running.port)
+
     def test_public_mode_rejects_bad_hosts_and_wrong_port(self) -> None:
+        status, _headers, data = self.running.json_request(
+            "GET", "/api/health",
+            headers={"Host": f"0.0.0.0:{self.running.port}"},
+        )
+        self.assertEqual(status, 421)
+        self.assertEqual(data["code"], "invalid_host")
+        self.assertEqual(data["listen_mode"], "public_bind")
+        self.assertEqual(data["expected_port"], self.running.port)
         wrong_port = self.running.port + 1 if self.running.port < 65535 else self.running.port - 1
         bad_hosts = [
             f"assistant.example.com:{wrong_port}",
@@ -438,17 +468,20 @@ class PublicBindingTests(unittest.TestCase):
             "null",
         ]
         for origin in bad_origins:
-            status, _headers, _data = self.running.json_request(
+            status, _headers, data = self.running.json_request(
                 "POST", "/api/chat", {"message": "不应发送"},
                 headers={"Host": host, "Origin": origin},
             )
             self.assertEqual(status, 403, origin)
+            self.assertEqual(data["code"], "invalid_origin")
+            self.assertEqual(data["expected_port"], self.running.port)
         self.assertEqual(self.fake.calls, [])
 
     def test_public_startup_messages_warn_and_never_include_key(self) -> None:
         config = assistant.load_config(self.config)
         text = "\n".join(assistant.startup_messages(config, "0.0.0.0", 8766))
         self.assertIn("实际监听 0.0.0.0:8766", text)
+        self.assertIn("socket", text)
         self.assertIn("assistant.example.com:8766", text)
         for warning in ("没有内置用户认证", "禁止裸奔公网", "防火墙", "VPN", "反向代理"):
             self.assertIn(warning, text)
@@ -457,7 +490,142 @@ class PublicBindingTests(unittest.TestCase):
             {**config, "host": "127.0.0.1", "public_host": ""}, "127.0.0.1", 8766
         )
         self.assertTrue(any("本机回环" in line for line in loopback))
+        self.assertTrue(any("实际监听 socket" in line for line in loopback))
         self.assertFalse(any("禁止裸奔公网" in line for line in loopback))
+
+
+class DiagnoseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.studio = self.root / ".local/share/qqbot-studio"
+        self.config = self.root / "ai-assistant/config.json"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_old_config_without_public_host_is_still_compatible(self) -> None:
+        port = free_port()
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text(json.dumps({
+            "version": 1,
+            "host": "127.0.0.1",
+            "port": port,
+            "key_source": "independent",
+            "api_key": "",
+            "timeout_seconds": 120,
+            "system_prompt": "旧配置兼容测试",
+        }, ensure_ascii=False), encoding="utf-8")
+        if os.name != "nt":
+            os.chmod(self.config, 0o600)
+        config = assistant.load_config(self.config)
+        self.assertEqual(config["public_host"], "")
+        self.assertEqual(config["port"], port)
+        self.assertEqual(config["host"], "127.0.0.1")
+
+    def test_diagnose_loopback_not_running_and_cli_has_no_key(self) -> None:
+        port = free_port()
+        write_config(self.config, host="127.0.0.1", port=port, api_key=SECRET)
+        report, ok = assistant.diagnose(self.config, self.studio)
+        self.assertTrue(ok)
+        self.assertTrue(report["ok"])
+        self.assertFalse(report["ready_for_chat"])  # server not running yet
+        self.assertTrue(report["configured"])
+        self.assertEqual(report["key_source"], "independent")
+        self.assertEqual(report["host"], "127.0.0.1")
+        self.assertEqual(report["port"], port)
+        self.assertTrue(report["bind_test"]["ok"])
+        self.assertFalse(report["health"]["ok"])
+        self.assertFalse(report["host_guard"]["checked"])
+        self.assertEqual(report["external_reachability"], "not_verified")
+        rendered = json.dumps(report, ensure_ascii=False)
+        self.assertNotIn(SECRET, rendered)
+        self.assertIn("security_warnings", report)
+        self.assertIn("SSH", " ".join(report["security_warnings"]))
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            rc = assistant.main([
+                "--config", str(self.config),
+                "--studio-home", str(self.studio),
+                "--diagnose",
+            ])
+        self.assertEqual(rc, 0)
+        parsed = json.loads(output.getvalue())
+        self.assertEqual(parsed["port"], port)
+        self.assertNotIn(SECRET, output.getvalue())
+
+    def test_diagnose_running_public_bind_reports_socket_health_and_host_guard(self) -> None:
+        port = free_port("0.0.0.0")
+        write_config(
+            self.config,
+            host="0.0.0.0",
+            public_host="192.144.206.201",
+            port=port,
+            api_key=SECRET,
+        )
+        fake = FakeDeepSeek()
+        running = RunningAssistant(
+            self.config, self.studio, fake.url, bind_host="0.0.0.0", bind_port=port
+        )
+        try:
+            report, ok = assistant.diagnose(self.config, self.studio)
+        finally:
+            running.close()
+            fake.close()
+        self.assertTrue(ok)
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["ready_for_chat"])
+        self.assertEqual(report["public_host"], "192.144.206.201")
+        self.assertEqual(report["url"], f"http://192.144.206.201:{port}/")
+        self.assertEqual(report["listener"]["host"], "0.0.0.0")
+        self.assertEqual(report["listener"]["port"], port)
+        self.assertEqual(report["listener"]["mode"], "public_bind")
+        self.assertEqual(report["listener"]["source"], "health")
+        self.assertTrue(report["listener_matches_config"])
+        self.assertTrue(report["bind_test"]["port_in_use"])
+        self.assertTrue(report["health"]["ok"])
+        self.assertTrue(report["public_host_health"]["ok"])
+        self.assertTrue(report["host_guard"]["checked"])
+        self.assertTrue(report["host_guard"]["ok"])
+        self.assertEqual(report["host_guard"]["status"], 421)
+        self.assertEqual(report["host_guard"]["code"], "invalid_host")
+        self.assertEqual(report["external_reachability"], "not_verified")
+        warnings = " ".join(report["security_warnings"])
+        for word in ("没有内置用户认证", "禁止裸奔公网", "云安全组", "防火墙", "VPN", "反向代理"):
+            self.assertIn(word, warnings)
+        self.assertIn("192.144.206.201", report["external_access_note"])
+        rendered = json.dumps(report, ensure_ascii=False)
+        self.assertNotIn(SECRET, rendered)
+        self.assertNotIn("api_key", rendered)
+
+    def test_diagnose_detects_non_assistant_port_occupancy(self) -> None:
+        port = free_port()
+        holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            holder.bind(("127.0.0.1", port))
+            write_config(self.config, host="127.0.0.1", port=port, api_key="")
+            report, ok = assistant.diagnose(self.config, self.studio)
+        finally:
+            holder.close()
+        self.assertFalse(ok)
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["bind_test"]["port_in_use"])
+        self.assertFalse(report["health"]["ok"])
+        self.assertIn("占用", " ".join(report["hints"]))
+
+    def test_diagnose_flags_management_port_8765(self) -> None:
+        write_config(
+            self.config,
+            host="127.0.0.1",
+            port=assistant.MANAGEMENT_PORT,
+            api_key="",
+        )
+        report, ok = assistant.diagnose(self.config, self.studio)
+        self.assertFalse(ok)
+        self.assertTrue(report["management_port_conflict"])
+        self.assertIn("8765", " ".join(report["security_warnings"]))
+        self.assertIn("8766", " ".join(report["hints"]))
 
 
 class ValidationTests(unittest.TestCase):

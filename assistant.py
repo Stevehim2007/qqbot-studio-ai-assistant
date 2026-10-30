@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import getpass
+import http.client
 import ipaddress
 import json
 import os
@@ -24,10 +26,12 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 APP_NAME = "qqbot-studio-ai-assistant"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 MODEL = "deepseek-flash"
 DEEPSEEK_CHAT_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_PORT = 8766
+MANAGEMENT_PORT = 8765
+DIAGNOSE_TIMEOUT = 2.0
 DEFAULT_TIMEOUT = 120
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 PUBLIC_BIND_HOST = "0.0.0.0"
@@ -703,6 +707,50 @@ class Handler(BaseHTTPRequestHandler):
             effective_port = 443 if parsed.scheme == "https" else 80
         return origin_host == host_parts[0] and effective_port == self._actual_port()
 
+    def _listen_mode(self) -> str:
+        return "public_bind" if self._public_bind() else "loopback"
+
+    def _host_error(self) -> None:
+        port = self._actual_port()
+        if self._public_bind():
+            guidance = (
+                "当前为 0.0.0.0 公网绑定：Host 必须是合法公网域名/IP，"
+                "包含实际端口，且不能使用 0.0.0.0/::、路径或 userinfo。"
+            )
+        else:
+            guidance = (
+                "当前为回环模式：Host 必须是 127.0.0.1、localhost 或 [::1]，"
+                "并包含实际端口。"
+            )
+        self._json(
+            HTTPStatus.MISDIRECTED_REQUEST,
+            {
+                "ok": False,
+                "code": "invalid_host",
+                "error": "Host 头校验失败：" + guidance,
+                "listen_mode": self._listen_mode(),
+                "expected_port": port,
+            },
+        )
+
+    def _origin_error(self) -> None:
+        port = self._actual_port()
+        schemes = "http 或 https" if self._public_bind() else "http"
+        self._json(
+            HTTPStatus.FORBIDDEN,
+            {
+                "ok": False,
+                "code": "invalid_origin",
+                "error": (
+                    "Origin 校验失败：Origin 必须与 Host 的 hostname 和实际端口 "
+                    f"{port} 一致，公网模式使用 {schemes}，回环模式仅使用 http，"
+                    "且不能带路径、查询串或 userinfo。"
+                ),
+                "listen_mode": self._listen_mode(),
+                "expected_port": port,
+            },
+        )
+
     def _read_json(self) -> Any:
         if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
             raise ValueError("Content-Type 必须是 application/json")
@@ -725,7 +773,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if not self._host_ok():
-            self._error(HTTPStatus.MISDIRECTED_REQUEST, "Host 头不受信任")
+            self._host_error()
             return
         path = urlsplit(self.path).path
         if path == "/":
@@ -745,7 +793,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "读取本地配置失败")
             return
         if path == "/api/health":
-            self._json(HTTPStatus.OK, {"ok": True, "app": APP_NAME, "version": APP_VERSION})
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "app": APP_NAME,
+                    "version": APP_VERSION,
+                    "listen_mode": self._listen_mode(),
+                    "listen_host": str(self.server.server_address[0]),  # type: ignore[attr-defined]
+                    "listen_port": self._actual_port(),
+                },
+            )
             return
         if path == "/favicon.ico":
             self._send(HTTPStatus.NO_CONTENT, "image/x-icon", b"")
@@ -754,10 +812,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         if not self._host_ok():
-            self._error(HTTPStatus.MISDIRECTED_REQUEST, "Host 头不受信任")
+            self._host_error()
             return
         if not self._origin_ok():
-            self._error(HTTPStatus.FORBIDDEN, "跨站请求已被拒绝")
+            self._origin_error()
             return
         if urlsplit(self.path).path != "/api/chat":
             self._error(HTTPStatus.NOT_FOUND, "接口不存在")
@@ -814,7 +872,7 @@ def startup_messages(config: Mapping[str, Any], listen_host: str, listen_port: i
     display_port = int(listen_port)
     if str(config.get("host") or "") == PUBLIC_BIND_HOST or str(listen_host) == PUBLIC_BIND_HOST:
         messages = [
-            f"{APP_NAME} {APP_VERSION} 已启动，实际监听 {listen_host}:{display_port}（所有网卡）。",
+            f"{APP_NAME} {APP_VERSION} 已启动，实际监听 {listen_host}:{display_port}（socket，所有网卡）。",
         ]
         public_host = str(config.get("public_host") or "").strip()
         if public_host:
@@ -831,11 +889,348 @@ def startup_messages(config: Mapping[str, Any], listen_host: str, listen_port: i
             "必须使用防火墙/安全组限制来源，或通过 VPN、带认证的反向代理访问。",
             "Host/Origin 校验不是身份认证，不能替代网络访问控制。",
         ])
-        return messages
-    return [
-        f"{APP_NAME} {APP_VERSION} 已启动：http://{_format_url_host(listen_host)}:{display_port}/",
-        "服务仅监听本机回环地址；远端访问请使用 SSH 隧道或安全代理。",
-    ]
+    else:
+        messages = [
+            f"{APP_NAME} {APP_VERSION} 已启动：http://{_format_url_host(listen_host)}:{display_port}/",
+            f"实际监听 socket：{_format_url_host(listen_host)}:{display_port}（仅回环）。",
+            "服务仅监听本机回环地址；远端访问请使用 SSH 隧道或安全代理。",
+        ]
+    if display_port == MANAGEMENT_PORT:
+        messages.append(
+            f"警告：端口 {MANAGEMENT_PORT} 是主项目管理服务默认端口，"
+            f"B 应改用默认端口 {DEFAULT_PORT}，否则可能冲突。"
+        )
+    return messages
+
+
+def _probe_bind(host: str, port: int) -> dict[str, Any]:
+    probe_host = host
+    family = socket.AF_INET
+    if host == "::1":
+        family = socket.AF_INET6
+    elif host == "localhost":
+        probe_host = "127.0.0.1"
+    result: dict[str, Any] = {
+        "ok": False,
+        "configured_address": f"{_format_url_host(host)}:{port}",
+        "probe_address": f"{_format_url_host(probe_host)}:{port}",
+        "port": int(port),
+        "port_in_use": False,
+        "errno": None,
+        "error": "",
+    }
+    sock: socket.socket | None = None
+    try:
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        sock.bind((probe_host, int(port)))
+        result["ok"] = True
+    except OSError as exc:
+        in_use_codes = {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", -1)}
+        result["errno"] = exc.errno
+        result["port_in_use"] = exc.errno in in_use_codes
+        result["error"] = safe_message(exc.strerror or exc, limit=300)
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+    return result
+
+
+def _http_get_json(
+    connect_host: str,
+    port: int,
+    path: str,
+    host_header: str,
+    timeout: float = DIAGNOSE_TIMEOUT,
+) -> tuple[int | None, dict[str, Any] | None, str]:
+    connection = http.client.HTTPConnection(connect_host, int(port), timeout=timeout)
+    try:
+        connection.request(
+            "GET",
+            path,
+            headers={"Host": host_header, "Accept": "application/json", "Connection": "close"},
+        )
+        response = connection.getresponse()
+        raw = response.read(64 * 1024)
+        try:
+            parsed = json.loads(raw.decode("utf-8")) if raw else {}
+        except (UnicodeError, json.JSONDecodeError):
+            parsed = None
+        data = parsed if isinstance(parsed, dict) else None
+        return int(response.status), data, ""
+    except Exception as exc:  # network diagnostics must never crash the CLI
+        return None, None, safe_message(exc, limit=300)
+    finally:
+        connection.close()
+
+
+def _health_probe(host_header: str, connect_host: str, port: int) -> dict[str, Any]:
+    status, data, transport_error = _http_get_json(
+        connect_host, port, "/api/health", host_header
+    )
+    result: dict[str, Any] = {
+        "ok": False,
+        "url": f"http://{_format_url_host(connect_host)}:{int(port)}/api/health",
+        "host_header": host_header,
+        "status": status,
+        "app": "",
+        "version": "",
+        "listen_mode": "",
+        "listen_host": "",
+        "listen_port": None,
+        "error": transport_error,
+    }
+    if isinstance(data, Mapping):
+        result["app"] = str(data.get("app") or "")
+        result["version"] = str(data.get("version") or "")
+        result["listen_mode"] = str(data.get("listen_mode") or "")
+        result["listen_host"] = str(data.get("listen_host") or "")
+        listen_port = data.get("listen_port")
+        if isinstance(listen_port, int) and not isinstance(listen_port, bool):
+            result["listen_port"] = listen_port
+        if data.get("error"):
+            result["error"] = safe_message(data.get("error"), limit=300)
+    if status is None:
+        result["error"] = result["error"] or "连接失败"
+    elif not 200 <= status < 300:
+        result["error"] = result["error"] or f"HTTP {status}"
+    elif result["app"] != APP_NAME or (isinstance(data, Mapping) and data.get("ok") is not True):
+        result["error"] = (
+            f"端口上的 /api/health 不是 {APP_NAME} 的预期响应；"
+            "可能与其他服务冲突或版本不兼容"
+        )
+    else:
+        result["ok"] = True
+        result["error"] = ""
+    return result
+
+
+def _host_guard_probe(host_header: str, connect_host: str, port: int) -> dict[str, Any]:
+    status, data, transport_error = _http_get_json(
+        connect_host, port, "/api/health", host_header
+    )
+    code = str(data.get("code") or "") if isinstance(data, Mapping) else ""
+    message = str(data.get("error") or "") if isinstance(data, Mapping) else ""
+    ok = status in (HTTPStatus.BAD_REQUEST, HTTPStatus.MISDIRECTED_REQUEST) and code == "invalid_host"
+    return {
+        "checked": status is not None,
+        "ok": ok,
+        "host_header": host_header,
+        "status": status,
+        "expected_status": [400, 421],
+        "code": code,
+        "expected_code": "invalid_host",
+        "error": safe_message(message or transport_error, limit=300),
+    }
+
+
+def diagnose(config_path: Path | str, studio_home: Path | str | None = None) -> tuple[dict[str, Any], bool]:
+    """Return a machine-readable self-diagnosis report and a success flag."""
+    path = Path(config_path).expanduser()
+    home = Path(studio_home).expanduser() if studio_home else default_studio_home()
+    existed = path.exists()
+    try:
+        config = load_config(path)
+        configured = False
+        key_error = ""
+        try:
+            resolve_key(config, home)
+            configured = True
+        except KeyConfigError as exc:
+            key_error = safe_message(exc)
+    except ConfigError as exc:
+        report = {
+            "ok": False,
+            "ready_for_chat": False,
+            "app": APP_NAME,
+            "version": APP_VERSION,
+            "config_path": str(path),
+            "config_exists": existed,
+            "error": safe_message(exc),
+            "configured": False,
+            "key_source": "",
+            "host": "",
+            "port": None,
+            "public_host": "",
+            "url": None,
+            "listener": None,
+            "bind_test": {"ok": False, "port_in_use": False, "error": "配置无效，未执行绑定测试"},
+            "health": {"ok": False, "error": "配置无效，未执行健康检查"},
+            "host_guard": {"checked": False, "ok": False},
+            "security_warnings": [
+                "配置无效，无法执行公网绑定诊断；请先修复 config.json。",
+            ],
+            "external_reachability": "not_verified",
+        }
+        return report, False
+
+    host = str(config["host"])
+    port = int(config["port"])
+    public_host = str(config["public_host"])
+    mode = "public_bind" if host == PUBLIC_BIND_HOST else "loopback"
+    bind_test = _probe_bind(host, port)
+
+    if host == "::1":
+        connect_host = "::1"
+        local_host_header = f"[::1]:{port}"
+    elif host == "localhost":
+        connect_host = "127.0.0.1"
+        local_host_header = f"localhost:{port}"
+    elif host == PUBLIC_BIND_HOST:
+        connect_host = "127.0.0.1"
+        local_host_header = f"127.0.0.1:{port}"
+    else:
+        connect_host = "127.0.0.1"
+        local_host_header = f"127.0.0.1:{port}"
+
+    health = _health_probe(local_host_header, connect_host, port)
+    public_health: dict[str, Any] | None = None
+    if mode == "public_bind" and public_host:
+        public_health = _health_probe(
+            f"{_format_url_host(public_host)}:{port}", "127.0.0.1", port
+        )
+
+    invalid_host_header = (
+        f"0.0.0.0:{port}" if mode == "public_bind" else f"public.example.com:{port}"
+    )
+    host_guard = (
+        _host_guard_probe(invalid_host_header, connect_host, port)
+        if health["ok"]
+        else {
+            "checked": False,
+            "ok": False,
+            "host_header": invalid_host_header,
+            "status": None,
+            "expected_status": [400, 421],
+            "code": "",
+            "expected_code": "invalid_host",
+            "error": "服务未响应，无法验证 Host 防护；连接失败不等同于 421。",
+        }
+    )
+
+    actual_listener: dict[str, Any]
+    if health["ok"]:
+        actual_listener = {
+            "host": health["listen_host"],
+            "port": health["listen_port"] or port,
+            "mode": health["listen_mode"],
+            "source": "health",
+        }
+    else:
+        actual_listener = {
+            "host": host,
+            "port": port,
+            "mode": mode,
+            "source": "config",
+        }
+
+    listener_matches_config: bool | None = None
+    if health["ok"]:
+        listener_matches_config = (
+            actual_listener["mode"] == mode
+            and (not public_health or public_health["ok"])
+        )
+
+    url: str | None
+    if mode == "public_bind":
+        url = (
+            f"http://{_format_url_host(public_host)}:{port}/"
+            if public_host
+            else None
+        )
+    else:
+        url = f"http://{_format_url_host(host)}:{port}/"
+
+    warnings: list[str] = []
+    if mode == "public_bind":
+        warnings.extend([
+            "host=0.0.0.0 会监听所有网卡，且服务没有内置用户认证；禁止裸奔公网。",
+            "必须使用防火墙/云安全组限制来源，或通过 VPN、带认证的反向代理访问。",
+            "0.0.0.0 只是本机监听地址，不代表云安全组或主机防火墙已经放行。",
+            "Host/Origin 校验不是身份认证，不能替代网络访问控制。",
+        ])
+    else:
+        warnings.append("当前仅监听回环地址；远程访问请使用 SSH 隧道或安全代理。")
+    if not configured:
+        warnings.append("API Key 尚未配置，服务即使启动也无法完成聊天请求。")
+    management_port_conflict = port == MANAGEMENT_PORT
+    if management_port_conflict:
+        warnings.append(
+            f"端口 {MANAGEMENT_PORT} 是主项目管理服务默认端口，B 应改用 "
+            f"{DEFAULT_PORT}，否则会冲突。"
+        )
+
+    technical_ok = bool(bind_test["ok"] or health["ok"])
+    if management_port_conflict:
+        technical_ok = False
+    if health["ok"] and listener_matches_config is False:
+        technical_ok = False
+
+    hints: list[str] = []
+    if bind_test["ok"] and not health["ok"]:
+        hints.append("本机端口当前可绑定，但 health 未响应：服务尚未启动或监听 host/port 不一致。")
+    elif bind_test["port_in_use"] and health["ok"]:
+        hints.append("端口已被当前 AI 助手 B 占用，且本机 health 正常，无需重复启动。")
+    elif bind_test["port_in_use"] and not health["ok"]:
+        hints.append(
+            "端口被占用，但本机 /api/health 未识别到 AI 助手 B；"
+            "可能是管理服务或其他进程冲突，请检查占用者或更换端口。"
+        )
+    elif not bind_test["ok"] and not health["ok"]:
+        hints.append("本机绑定失败且 health 不可达；请检查 host/port、权限和端口占用。")
+    if health["ok"] and mode == "public_bind":
+        hints.append(
+            "本机 health 成功只证明本机 127.0.0.1 可达；请从外部网络继续验证云安全组/防火墙。"
+        )
+    if public_health is not None and health["ok"] and not public_health["ok"]:
+        hints.append("使用 public_host 的本地 Host 探测失败；检查 public_host 与 Host/Origin 规则。")
+    if management_port_conflict:
+        hints.append(f"请将配置 port 改为默认 {DEFAULT_PORT} 并重启服务。")
+
+    public_target = public_host or "服务器公网IP/域名"
+    if mode == "public_bind":
+        external_note = (
+            f"本工具无法从外部网络验证 {public_target}:{port} 的入站连通性。"
+            "若本机 bind/health 正常但仍无法从公网访问，优先检查云安全组、"
+            "主机防火墙、NAT/端口映射、public_host 是否填写正确。"
+        )
+    else:
+        external_note = (
+            "当前为回环模式，公网无法直接访问。需要远程访问时请使用 SSH 隧道或安全代理，"
+            "不要仅修改 Host 头。"
+        )
+
+    report = {
+        "ok": technical_ok,
+        "ready_for_chat": bool(technical_ok and configured and health["ok"]),
+        "app": APP_NAME,
+        "version": APP_VERSION,
+        "config_path": str(path),
+        "config_exists": existed,
+        "configured": configured,
+        "key_source": config["key_source"],
+        "instance_id": config["instance_id"],
+        "key_error": key_error,
+        "host": host,
+        "port": port,
+        "public_host": public_host,
+        "url": url,
+        "url_hint": None if url else f"http://<公网IP或域名>:{port}/",
+        "listener": actual_listener,
+        "listener_matches_config": listener_matches_config,
+        "bind_test": bind_test,
+        "health": health,
+        "public_host_health": public_health,
+        "host_guard": host_guard,
+        "management_port_conflict": management_port_conflict,
+        "security_warnings": warnings,
+        "hints": hints,
+        "external_reachability": "not_verified",
+        "external_access_note": external_note,
+    }
+    return report, technical_ok
 
 
 def serve(config_path: Path, studio_home: Path) -> int:
@@ -873,6 +1268,11 @@ def parser() -> argparse.ArgumentParser:
     group.add_argument("--init-config", action="store_true", help="创建配置模板（不覆盖已有文件）")
     group.add_argument("--set-key", action="store_true", help="交互式保存独立 API Key（不回显）")
     group.add_argument("--check", action="store_true", help="检查配置和 Key，不启动服务")
+    group.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="输出 JSON 自检报告：配置、监听/bind、健康检查、Host 防护和公网边界",
+    )
     group.add_argument("--print-config-path", action="store_true", help="输出默认配置路径")
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help="初始化端口，默认 8766")
     p.add_argument(
@@ -937,6 +1337,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         print("已保存独立 API Key 到本机配置文件；不会显示 Key 内容。")
         return 0
+    if args.diagnose:
+        report, ok = diagnose(config_path, studio_home)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if ok else 1
     if args.check:
         try:
             status = AssistantApp(config_path, studio_home).public_status()

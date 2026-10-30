@@ -61,6 +61,19 @@ jobs:
           assert config["port"] == 18765
           PY
           "$HOME/.local/bin/qqbot-ai-assistant" --version
+          "$HOME/.local/bin/qqbot-ai-assistant" --diagnose > "$HOME/diagnose.json"
+          python - "$HOME/diagnose.json" <<'PY'
+          import json
+          import sys
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert report["host"] == "0.0.0.0"
+          assert report["port"] == 18765
+          assert report["public_host"] == "assistant.example.com"
+          assert "bind_test" in report and "health" in report and "host_guard" in report
+          assert report["external_reachability"] == "not_verified"
+          assert report["security_warnings"]
+          assert '"api_key"' not in json.dumps(report)
+          PY
           ./install.sh --uninstall --purge
           test ! -e "$HOME/.local/share/qqbot-studio/ai-assistant"
       - name: Windows installer smoke test
@@ -82,7 +95,17 @@ jobs:
             $launcher = Join-Path $HOME ".local\bin\qqbot-ai-assistant.cmd"
             if (-not (Test-Path -LiteralPath $launcher)) { throw "install.ps1 did not create launcher" }
             & $launcher --version
-            if ($LASTEXITCODE -ne 0) { throw "launcher failed with exit code $LASTEXITCODE" }
+            if ($LASTEXITCODE -ne 0) { throw "launcher --version failed with exit code $LASTEXITCODE" }
+            $diagPath = Join-Path $env:RUNNER_TEMP "assistant-diagnose.json"
+            & $launcher --diagnose | Out-File -LiteralPath $diagPath -Encoding utf8
+            if ($LASTEXITCODE -ne 0) { throw "launcher --diagnose failed with exit code $LASTEXITCODE" }
+            $diag = Get-Content -LiteralPath $diagPath -Raw | ConvertFrom-Json
+            if ($diag.host -ne "0.0.0.0") { throw "diagnose returned unexpected host" }
+            if ($diag.port -ne 18765) { throw "diagnose returned unexpected port" }
+            if ($diag.public_host -ne "assistant.example.com") { throw "diagnose returned unexpected public_host" }
+            if ($diag.external_reachability -ne "not_verified") { throw "diagnose must not claim external reachability" }
+            if ($diag.security_warnings.Count -lt 1) { throw "diagnose returned no security warnings" }
+            if ((Get-Content -LiteralPath $diagPath -Raw) -match '"api_key"') { throw "diagnose output leaked api_key field" }
             .\install.ps1 -Uninstall
             .\install.ps1 -Uninstall -Purge
             if (Test-Path -LiteralPath $env:QQBOT_AI_ASSISTANT_HOME) { throw "purge left B data directory behind" }
