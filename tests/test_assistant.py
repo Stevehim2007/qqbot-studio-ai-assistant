@@ -568,6 +568,31 @@ class PromptContextTests(unittest.TestCase):
         ):
             self.assertIn(windows_only, windows_prompt)
 
+    def test_v311_project_knowledge_is_fixed_short_and_platform_independent(self) -> None:
+        linux_prompt = assistant.build_system_prompt(
+            assistant.validate_config({"platform": "linux"})
+        )[1]
+        windows_prompt = assistant.build_system_prompt(
+            assistant.validate_config({"platform": "windows"})
+        )[1]
+        required = (
+            "v3.11", "提示词列表", "多 profile", "置顶/active",
+            "direct 下一轮使用新 prompt", "conversation", "Persona",
+            "每群使用独立 conversation 记忆/Persona",
+            "同一个 DeepSeek provider/API", "不新增 Key",
+            "/会话列表", "/会话 名称", "/新会话 名称",
+            "ambient 群聊默认关闭", "低频参与", "显式 @ 必回",
+            "官方 At", "@昵称文本", "群身份上下文", "当前发送者身份",
+            "统一 AI tool marker", "全局池", "多分类", "语义标签",
+            "/food", "food.dlsz.top", "最多 5 家", "不额外调用 LLM",
+            "VERSION/README/VALIDATION", "Native POC", "不得编造",
+        )
+        for prompt in (linux_prompt, windows_prompt):
+            self.assertLess(len(prompt), 2500)
+            self.assertTrue(prompt.startswith(assistant.PROJECT_SCOPE_PREFIX))
+            for term in required:
+                self.assertIn(term, prompt)
+
     def test_auto_platform_and_extra_prompt_cannot_disable_scope(self) -> None:
         expected = "windows" if os.name == "nt" else "linux"
         self.assertEqual(assistant.resolve_platform("auto"), expected)
@@ -589,6 +614,11 @@ class PromptContextTests(unittest.TestCase):
             "SnowLuma 的端口是多少？",
             "如何设置 AI 工具白名单？",
             "QQ Bot Studio 插件的代码怎么写？",
+            "/food 火锅",
+            "/会话列表",
+            "ambient 群聊怎么开启？",
+            "收藏表情怎么做多分类和语义标签？",
+            "Windows Native POC 当前发布状态？",
             "那接下来怎么办？",
         )
         history = [{"role": "user", "content": "AstrBot 怎么安装？"}]

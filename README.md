@@ -4,11 +4,13 @@
 服务与中文 Web UI，通过 DeepSeek OpenAI-compatible API 提供可选的生成式 AI 聊天能力。
 默认只监听回环地址；也支持用户**显式选择**高风险公网绑定。B 只回答 QQ Bot Studio
 项目相关问题，按 Linux/Windows 使用代码内置的固定短摘要，并限制上下文与输出 token。
+固定摘要已同步主项目 **v3.11** 的提示词列表、AstrBot 记忆/Persona、会话切换、
+ambient、群身份、统一 AI tool marker、收藏与 `/food` 等能力。
 
 > **A 默认保留；B 可选。** 主项目已有的离线知识库助手 A 不因 B 改变。B 不替代 A，
 > 代码也不进入主仓库。未安装或 B 配置/联网失败时，A 必须继续可用。
 
-- 当前版本：`0.4.0`
+- 当前版本：`0.5.0`
 - 固定模型：`deepseek-flash`
 - 固定上游：`https://api.deepseek.com/v1/chat/completions`
 - 运行依赖：Python 3.10+，无第三方 Python 包
@@ -42,6 +44,9 @@ B 失败不得阻塞 A。
   无关问题固定回复“我只回答 QQ Bot Studio 相关问题。”
 - **平台差异化**：`platform=auto` 默认按运行平台，或锁定 `linux` / `windows`；
   两类平台使用代码内置的固定短摘要，不把整份 README 放进 prompt。
+- **v3.11 项目知识固定摘要**：多提示词 profile/active、AstrBot 每群记忆/Persona、
+  `/会话列表`/`/会话 名称`/`/新会话 名称`、ambient 低频参与与 @ 降级、群身份上下文、
+  统一 AI tool marker、全局多分类/语义收藏池、`/food`。
 - **省 token**：固定系统前缀、最近最多 6 条上下文、上下文字符上限、
   输出 `max_tokens=350-500`；不重复大段文档。
 - 本地 JSON 配置，Linux/POSIX 权限强制 `0600`。
@@ -300,6 +305,32 @@ Native 为 POC。`platform=auto` 默认按运行平台；显式配置可锁定�
 `system_prompt_read_only`、`system_prompt_ignored`，供主项目 `/assistant` 页面显示
 “仅回答项目问题 / 平台 / 省 token 模式”。
 
+#### v3.11 固定知识摘要（代码内置，用户不可修改）
+
+固定 prompt 中包含以下短摘要，不投放整份 README：
+
+- **提示词列表**：每个实例可有多 profile，同一时刻仅一个置顶/active。切换后，
+  `direct` 模式下一轮直接使用新 prompt；`AstrBot memory` 模式下一轮新建
+  conversation 并绑定专用 Persona，切换可能显示 pending。
+- **AstrBot memory 模式**：每个群使用独立 conversation 记忆和 Persona，复用同一个
+  DeepSeek provider/API，不新增 Key；不得编造按群隔离已生效，需以实际状态为准。
+- **按名称切换会话**：群聊 `/会话列表`、`/会话 名称`、`/新会话 名称`；新建/切换后
+  绑定当前群人格，群之间隔离。
+- **ambient 群聊**：默认关闭；开启后低频参与，显式 @ 必回；@ 发言人优先官方 At，
+  组件不可用时降级为 `@昵称` 文本，不把 QQ 号写进文本。
+- **群身份上下文**：按当前发送者身份区分群成员；QQ/昵称/群号仅用于身份区分，
+  不在回复或日志中暴露。
+- **统一 AI tool marker**：单套工具/表情白名单，一次事件最多一条文字 + 一个附件；
+  不使用电脑控制、沙箱、终端或任意文件路径。
+- **收藏表情**：全局收藏池，支持多分类归属、SHA-256 去重、tags/meaning/tone
+  语义标签；分类查询跨会话可见。
+- **`/food`**：固定 `https://food.dlsz.top`，最多 5 家，不额外调用 LLM。
+- **Windows 发布边界**：正式 Release 与 Native POC 状态必须以 Windows 独立仓库的
+  `VERSION`/README/VALIDATION 为准，不得编造版本或发布状态。
+
+该摘要只增加约几百个中文字符；系统提示、历史上下文和输出 token 上限仍沿用上面的
+省 token 设置。用户 `system_prompt` 依旧完全不参与 prompt。
+
 ### 6.1 显式公网绑定（高风险，默认关闭）
 
 默认必须保持回环。只有在清楚风险并已设置网络边界时，才可显式编辑配置：
@@ -419,7 +450,7 @@ python3 assistant.py \
 {
   "ok": true,
   "app": "qqbot-studio-ai-assistant",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "listen_mode": "loopback",
   "listen_host": "127.0.0.1",
   "listen_port": 8766
@@ -435,7 +466,7 @@ python3 assistant.py \
 {
   "ok": true,
   "app": "qqbot-studio-ai-assistant",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "configured": true,
   "key_source": "independent",
   "key_error": "",
@@ -584,7 +615,7 @@ python3 -m unittest discover -s tests -v
 bash -n install.sh
 ```
 
-共 **43 个** mock 测试，覆盖：配置 `0600`、独立/实例 Key、旧配置缺省字段兼容、路径越界、
+共 **44 个** mock 测试，覆盖：配置 `0600`、独立/实例 Key、旧配置缺省字段兼容、路径越界、
 `/api/status`、`/api/chat`、固定 `deepseek-flash`、`stream=false`、Key 不出现在响应/错误、
 上游 401 脱敏、拒绝上游重定向、Host/Origin/Content-Type/输入校验、CSP 等安全头。
 项目范围测试覆盖无关问题固定拒绝且不调用上游、项目问题正常、Linux/Windows 固定摘要
@@ -620,6 +651,10 @@ Linux 和 Windows 还会执行安装器 smoke test（创建配置/启动器、�
   实际无关的问题交给上游，最终应由固定提示拒绝；未用真实 DeepSeek Key 做完整语义验收。
 - 固定前缀只是有利于上游缓存，不保证 DeepSeek 一定命中缓存或按缓存价格计费；
   `max_tokens` 由上游执行情况决定。用户配置的 `system_prompt` 始终被忽略。
+- v3.11 知识摘要来自当前主项目文档；AstrBot/QQ 的具体运行时状态、提示词切换是否
+  pending、群会话/Persona/ambient 的真实效果未被本次 B mock 测试端到端验证。
+- Windows 当前正式 Release/Native POC 状态不在 B 中硬编码，必须查询 Windows 仓库
+  `VERSION`/README/VALIDATION；B 的提示要求不得猜测。
 
 真实联调时优先保持默认回环，用低风险测试消息并检查 DeepSeek 用量。若必须测试公网绑定，
 先设置最小来源范围的防火墙规则和认证边界，测试后立即关闭。不要提交真实 Key。

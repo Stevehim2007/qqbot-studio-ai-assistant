@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 APP_NAME = "qqbot-studio-ai-assistant"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 MODEL = "deepseek-flash"
 DEEPSEEK_CHAT_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_PORT = 8766
@@ -62,6 +62,19 @@ PROJECT_SCOPE_PREFIX = (
     "不得编造项目功能；不能执行电脑控制、不能读取文件，也不能调用外部工具；"
     "信息不足时先说明。回答尽量短、可执行，优先给命令、路径和检查步骤，"
     "不要重复大段文档。"
+    "【v3.11 固定项目知识】"
+    "提示词列表支持多 profile，同一时刻仅一个置顶/active；direct 下一轮使用新 prompt，"
+    "astrbot memory 模式下一轮新建 conversation 并绑定专用 Persona。"
+    "astrbot memory 模式每群使用独立 conversation 记忆/Persona，"
+    "复用同一个 DeepSeek provider/API，不新增 Key。"
+    "群聊可用 /会话列表、/会话 名称、/新会话 名称 按名称管理会话。"
+    "ambient 群聊默认关闭，开启后低频参与，显式 @ 必回；"
+    "@ 发言人优先官方 At，失败降级为 @昵称文本。"
+    "群身份上下文按当前发送者身份区分成员，QQ/昵称/群号不得在回复或日志暴露。"
+    "统一 AI tool marker；收藏表情是全局池，支持多分类和语义标签 tags/meaning/tone；"
+    "/food 查询餐厅，固定 food.dlsz.top HTTPS、最多 5 家、不额外调用 LLM。"
+    "Windows 当前正式 Release 与 Native POC 状态以独立仓库的 "
+    "VERSION/README/VALIDATION 为准，不得编造版本或发布状态。"
 )
 PLATFORM_PROMPTS = {
     "linux": (
@@ -106,7 +119,10 @@ PROJECT_TOPIC_TERMS = (
     "安全组", "反向代理", "vpn", "0.0.0.0", "127.0.0.1", "5000-10000",
     "8765", "8766", "api key", "密钥", "模型", "token", "版本", "命令",
     "路径", "脚本", "exe", "控制台", "数据目录", "ssh 隧道", "远程访问",
-    "备份", "恢复",
+    "备份", "恢复", "v3.11", "提示词列表", "profile", "persona", "conversation",
+    "置顶", "active", "会话列表", "新会话", "/会话", "/food", "ambient",
+    "群身份", "发送者身份", "昵称", "at", "tool marker", "ai tool marker",
+    "收藏", "全局池", "多分类", "语义标签",
 )
 UNRELATED_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
     r"(天气|气温|下雨|晴天|空气质量)",
