@@ -5,12 +5,13 @@
 默认只监听回环地址；也支持用户**显式选择**高风险公网绑定。B 只回答 QQ Bot Studio
 项目相关问题，按 Linux/Windows 使用代码内置的固定短摘要，并限制上下文与输出 token。
 固定摘要已同步主项目 **v3.11** 的提示词列表、AstrBot 记忆/Persona、会话切换、
-ambient、群身份、统一 AI tool marker、收藏与 `/food` 等能力。
+ambient、群身份、统一 AI tool marker、收藏与 `/food` 等能力。常见项目词拼写错误
+（如 `showluma` → SnowLuma）会在本地纠正，不额外调用 LLM。
 
 > **A 默认保留；B 可选。** 主项目已有的离线知识库助手 A 不因 B 改变。B 不替代 A，
 > 代码也不进入主仓库。未安装或 B 配置/联网失败时，A 必须继续可用。
 
-- 当前版本：`0.5.0`
+- 当前版本：`0.5.1`
 - 固定模型：`deepseek-flash`
 - 固定上游：`https://api.deepseek.com/v1/chat/completions`
 - 运行依赖：Python 3.10+，无第三方 Python 包
@@ -331,6 +332,63 @@ Native 为 POC。`platform=auto` 默认按运行平台；显式配置可锁定�
 该摘要只增加约几百个中文字符；系统提示、历史上下文和输出 token 上限仍沿用上面的
 省 token 设置。用户 `system_prompt` 依旧完全不参与 prompt。
 
+#### 常见项目术语别名/拼写纠错
+
+内置的 stdlib 专用别名表会在发往上游前做低成本规范化，不调用第二个 LLM：
+
+| 标准名 | 常见写法/误写 |
+|---|---|
+| `SnowLuma` | `snowluma`、`snow luma`、`snow-luma`、`showluma`、`雪花`、`雪` |
+| `AstrBot` | `astrbot`、`astr bot`、`astra bot`、`astrobot` |
+| `OneBot` | `onebot`、`one bot`、`onebot11`、`one bot v11` |
+| `DeepSeek` | `deepseek`、`deep seek`、`deapseek` |
+| `noVNC` | `novnc`、`no vnc`、`no-vnc` |
+| `QQ Bot Studio` | `qq bot studio`、`qqbot studio`、`qqbot-studio`、`qqbotstudio` |
+
+- 单术语查询（如 `showluma`、`showluma 是什么`、`snow luma`）直接在本地返回固定短解释，
+  不调用 DeepSeek，也不会回答“showluma 是什么”。
+- 复杂项目问题（如 `showluma 登录失败怎么排查？`）会在当前用户消息前注入一条很短
+  canonical hint（`showluma 指 SnowLuma`），固定系统 prompt 不变，token 增量很小。
+- 无关问题仍走原有本地拒绝；“今天下雪吗”不会被单字“雪”误判为项目问题。
+- 示例：
+
+```text
+showluma 是什么
+SnowLuma 登录失败怎么办？
+AstrBot、SnowLuma、OneBot 是什么关系？
+no vnc 打不开怎么办？
+/food 火锅
+```
+
+#### 主项目 `/assistant` 集成诊断
+
+已按主项目当前代码审计以下契约：
+
+- 主项目写 `<QQBOT_STUDIO_HOME>/ai-assistant/config.json`，并通过
+  `QQBOT_STUDIO_HOME` 环境变量 + `--config` 启动 B；B 0.5.x 兼容。
+- `host`（含显式 `0.0.0.0`）、`port`、`public_host` 写入路径一致；B 会再次校验。
+- 主项目 health 探测使用本机 `127.0.0.1:<port>/api/health`；B 在回环和
+  `0.0.0.0` 模式都可从本机访问，并返回 `app=qqbot-studio-ai-assistant`。
+- B 的用户 `system_prompt` 只读且被忽略；主项目 `/api/assistant/config` 不返回该内容。
+- 主项目 `/assistant` 页面不代理 `/api/chat`，聊天在打开 B 自身页面后进行；
+  B 的 `ok/reply/model` 旧响应字段仍兼容。
+- 主项目诊断页负责 listener/本机 health/公网探测；B 的 `--diagnose` 负责本地配置、
+  Bind/health/Host 防护、平台和 token 模式。两者字段不同但可互补。
+- 已知非阻塞可观测性缺口：主项目 `/assistant` 的配置/状态接口目前未展示 B 0.5.x 的
+  `platform/project_scope/token_mode/system_prompt_read_only` 字段；这不影响启动和聊天，
+  但排查模式问题时需要查看 B 自身 `/api/status` 或 `--diagnose`。
+
+若仍“没调对”，请按固定格式提供（不要发送 API Key）：
+
+1. 主项目 `/assistant` 的“版本 / Commit”（或 `git -C <扩展目录> rev-parse HEAD`）。
+2. `GET /api/assistant/config`、`GET /api/assistant/status`、`GET /api/assistant/diagnose`
+   的 JSON；可删除 token，但保留 `error_code`、`host`、`port`、`public_host`、
+   `listener`、`local_health`、`public_probe`、`suggestions`。
+3. B 本地命令 `~/.local/bin/qqbot-ai-assistant --diagnose` 的完整 JSON。
+4. 用户实际输入、页面显示的完整回复、浏览器 URL、HTTP 状态码和发生时间。
+5. 操作系统、是否执行过“更新 → 停止 → 启动”、以及 `assistant.log` 最后 100 行
+   （先确认不含 Key）。
+
 ### 6.1 显式公网绑定（高风险，默认关闭）
 
 默认必须保持回环。只有在清楚风险并已设置网络边界时，才可显式编辑配置：
@@ -450,7 +508,7 @@ python3 assistant.py \
 {
   "ok": true,
   "app": "qqbot-studio-ai-assistant",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "listen_mode": "loopback",
   "listen_host": "127.0.0.1",
   "listen_port": 8766
@@ -466,7 +524,7 @@ python3 assistant.py \
 {
   "ok": true,
   "app": "qqbot-studio-ai-assistant",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "configured": true,
   "key_source": "independent",
   "key_error": "",
@@ -615,7 +673,7 @@ python3 -m unittest discover -s tests -v
 bash -n install.sh
 ```
 
-共 **44 个** mock 测试，覆盖：配置 `0600`、独立/实例 Key、旧配置缺省字段兼容、路径越界、
+共 **47 个** mock 测试，覆盖：配置 `0600`、独立/实例 Key、旧配置缺省字段兼容、路径越界、
 `/api/status`、`/api/chat`、固定 `deepseek-flash`、`stream=false`、Key 不出现在响应/错误、
 上游 401 脱敏、拒绝上游重定向、Host/Origin/Content-Type/输入校验、CSP 等安全头。
 项目范围测试覆盖无关问题固定拒绝且不调用上游、项目问题正常、Linux/Windows 固定摘要

@@ -649,6 +649,31 @@ class PromptContextTests(unittest.TestCase):
             )
         )
 
+    def test_common_project_typos_get_short_canonical_guidance(self) -> None:
+        snow_variants = (
+            "showluma", "snowluma", "snow luma", "snow-luma",
+            "showluma 是什么", "什么是 SnowLuma", "雪花是什么", "雪",
+        )
+        for query in snow_variants:
+            explanation = assistant.project_term_explanation(query)
+            self.assertIn("SnowLuma", explanation, query)
+            self.assertIn("QQ 协议端", explanation, query)
+            self.assertIn("登录 QQ", explanation, query)
+            self.assertTrue(assistant.is_project_scope_question(query, []), query)
+        self.assertIn("AstrBot", assistant.project_term_explanation("astr bot"))
+        self.assertIn("OneBot", assistant.project_term_explanation("one bot v11"))
+        self.assertIn("DeepSeek", assistant.project_term_explanation("deep seek"))
+        self.assertIn("noVNC", assistant.project_term_explanation("no vnc"))
+        self.assertIn("QQ Bot Studio", assistant.project_term_explanation("qqbot studio"))
+        self.assertEqual(assistant.project_term_explanation("showtime 是什么"), "")
+        self.assertFalse(assistant.is_project_scope_question("今天下雪吗", []))
+        complex_hint = assistant.canonical_term_hint(
+            assistant.detect_project_terms("showluma 登录失败怎么排查？")
+        )
+        self.assertIn("showluma 指 SnowLuma", complex_hint)
+        self.assertLess(len(complex_hint), 120)
+        self.assertIn("使用标准名称", complex_hint)
+
     def test_context_trimming_by_messages_and_chars(self) -> None:
         history = [
             {"role": "user" if index % 2 == 0 else "assistant",
@@ -690,7 +715,10 @@ class ProjectScopeTokenHttpTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_unrelated_questions_use_fixed_refusal_without_upstream_call(self) -> None:
-        for message in ("今天天气怎么样？", "写一个 Python 快速排序", "讲个笑话", "你好"):
+        for message in (
+            "今天天气怎么样？", "今天下雪吗", "showtime 是什么",
+            "写一个 Python 快速排序", "讲个笑话", "你好",
+        ):
             status, _headers, data = self.running.json_request(
                 "POST", "/api/chat", {"message": message}
             )
@@ -834,6 +862,35 @@ class ProjectScopeTokenHttpTests(unittest.TestCase):
         self.assertTrue(system_prompt.startswith(assistant.PROJECT_SCOPE_PREFIX))
         self.assertNotIn(SECRET, json.dumps(data, ensure_ascii=False))
 
+    def test_snowluma_typo_variants_are_answered_locally_with_correct_term(self) -> None:
+        for query in ("showluma", "snowluma", "snow luma", "showluma 是什么", "雪花是什么"):
+            status, _headers, data = self.running.json_request(
+                "POST", "/api/chat", {"message": query}
+            )
+            self.assertEqual(status, 200, (query, data))
+            self.assertIn("SnowLuma", data["reply"])
+            self.assertIn("QQ 协议端", data["reply"])
+            self.assertNotIn("showluma 是什么", data["reply"])
+            self.assertTrue(data["term_explanation"])
+            self.assertFalse(data["scope_refused"])
+            self.assertNotIn(SECRET, json.dumps(data, ensure_ascii=False))
+        self.assertEqual(self.fake.calls, [])
+
+    def test_complex_showluma_question_gets_short_canonical_hint(self) -> None:
+        status, _headers, data = self.running.json_request(
+            "POST", "/api/chat", {"message": "showluma 登录失败怎么排查？"}
+        )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(len(self.fake.calls), 1)
+        sent = self.fake.calls[0]["json"]["messages"]
+        self.assertEqual(sent[-1]["role"], "user")
+        self.assertIn("showluma 指 SnowLuma", sent[-1]["content"])
+        self.assertIn("showluma 登录失败怎么排查？", sent[-1]["content"])
+        self.assertLess(len(sent[-1]["content"]), len("showluma 登录失败怎么排查？") + 120)
+        self.assertEqual(self.fake.calls[0]["json"]["max_tokens"], 400)
+        self.assertNotIn(SECRET, json.dumps(sent, ensure_ascii=False))
+        self.assertNotIn(SECRET, json.dumps(data, ensure_ascii=False))
+
     def test_unrelated_refusal_does_not_require_configured_key(self) -> None:
         write_config(
             self.config,
@@ -849,6 +906,13 @@ class ProjectScopeTokenHttpTests(unittest.TestCase):
         self.assertEqual(status, 200, data)
         self.assertEqual(data["reply"], assistant.PROJECT_SCOPE_REFUSAL)
         self.assertTrue(data["scope_refused"])
+        self.assertEqual(self.fake.calls, [])
+        status, _headers, data = self.running.json_request(
+            "POST", "/api/chat", {"message": "showluma 是什么"}
+        )
+        self.assertEqual(status, 200, data)
+        self.assertIn("SnowLuma", data["reply"])
+        self.assertTrue(data["term_explanation"])
         self.assertEqual(self.fake.calls, [])
         status, _headers, data = self.running.json_request(
             "POST", "/api/chat", {"message": "AstrBot 怎么配置？"}

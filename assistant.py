@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import errno
 import getpass
 import http.client
@@ -26,7 +27,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 APP_NAME = "qqbot-studio-ai-assistant"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 MODEL = "deepseek-flash"
 DEEPSEEK_CHAT_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_PORT = 8766
@@ -124,6 +125,60 @@ PROJECT_TOPIC_TERMS = (
     "群身份", "发送者身份", "昵称", "at", "tool marker", "ai tool marker",
     "收藏", "全局池", "多分类", "语义标签",
 )
+PROJECT_TERM_ALIASES = {
+    "SnowLuma": (
+        "snowluma", "snow luma", "snow-luma", "showluma", "show luma",
+        "雪花", "雪",
+    ),
+    "AstrBot": (
+        "astrbot", "astr bot", "astra bot", "astrobot",
+    ),
+    "OneBot": (
+        "onebot", "one bot", "onebot11", "onebot v11", "one bot v11",
+    ),
+    "DeepSeek": (
+        "deepseek", "deep seek", "deapseek",
+    ),
+    "noVNC": (
+        "novnc", "no vnc", "no-vnc",
+    ),
+    "QQ Bot Studio": (
+        "qq bot studio", "qqbot studio", "qqbot-studio", "qqbotstudio",
+        "qqbot", "qq bot",
+    ),
+}
+PROJECT_TERM_EXPLANATIONS = {
+    "SnowLuma": (
+        "SnowLuma 是 QQ 协议端/登录 QQ 用的组件：负责登录 QQ 并提供 OneBot v11 "
+        "连接，把消息接入 AstrBot；扫码登录通常经 noVNC 查看。"
+    ),
+    "AstrBot": (
+        "AstrBot 是 QQ 机器人对话框架，负责 Agent、插件、记忆和 DeepSeek 模型调用；"
+        "QQ Bot Studio 负责管理它的部署。"
+    ),
+    "OneBot": (
+        "OneBot v11 是 QQ 消息协议标准；SnowLuma 是协议端，AstrBot 通过反向 "
+        "WebSocket 与它对接。"
+    ),
+    "DeepSeek": (
+        "DeepSeek 是 OpenAI-compatible 模型服务；本项目使用 deepseek-flash，"
+        "API Key 只保存在本机，不会回显或写日志。"
+    ),
+    "noVNC": (
+        "noVNC 是浏览器 VNC 客户端，用于查看 Linux 容器里的 QQ 登录窗口并扫码；"
+        "它不是 QQ 协议端。"
+    ),
+    "QQ Bot Studio": (
+        "QQ Bot Studio 是管理 AstrBot/SnowLuma/OneBot 多实例、端口、插件、更新和"
+        "AI 助手 B 的本地管理面板。"
+    ),
+}
+TERM_QUERY_PREFIXES = ("什么是", "请问", "你知道", "介绍一下", "解释一下", "whatis")
+TERM_QUERY_SUFFIXES = (
+    "是什么", "是啥", "什么意思", "啥意思", "干什么的", "干嘛的",
+    "做什么的", "有什么用", "介绍一下", "介绍",
+)
+
 UNRELATED_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
     r"(天气|气温|下雨|晴天|空气质量)",
     r"(新闻|时事|股票|彩票|汇率)",
@@ -309,6 +364,96 @@ def _format_url_host(host: str) -> str:
     return f"[{host}]" if ":" in host and not host.startswith("[") else host
 
 
+def _compact_term(value: str) -> str:
+    text = str(value or "").strip().casefold()
+    text = re.sub(r"[\s_\-]+", "", text)
+    return re.sub(r"[?？!！。.,，;；:：]+$", "", text)
+
+
+def _exact_alias_matches(text: str) -> list[tuple[str, str]]:
+    normalized = str(text or "").casefold()
+    matches: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for canonical, aliases in PROJECT_TERM_ALIASES.items():
+        for alias in aliases:
+            if alias == "雪":
+                pattern = r"(?:^|[\s,，。!?！？;；:：])雪(?=$|[\s,，。!?！？;；:：])"
+            elif re.search(r"[a-z]", alias):
+                words = alias.split()
+                pattern = r"(?<![a-z0-9])" + r"[\s_\-]*".join(
+                    re.escape(word) for word in words
+                ) + r"(?![a-z0-9])"
+            else:
+                pattern = re.escape(alias)
+            found = re.search(pattern, normalized, re.IGNORECASE)
+            if found and canonical not in seen:
+                matches.append((canonical, found.group(0).strip()))
+                seen.add(canonical)
+    return matches
+
+
+def detect_project_terms(text: str) -> list[tuple[str, str]]:
+    """Return (canonical project term, matched text) for exact/fuzzy aliases."""
+    matches = _exact_alias_matches(text)
+    seen = {canonical for canonical, _matched in matches}
+    canonical_compacts = {_compact_term(name): name for name in PROJECT_TERM_ALIASES}
+    for token in re.findall(r"[a-z][a-z0-9_-]{3,}", str(text or "").casefold()):
+        compact = re.sub(r"[_\-]+", "", token)
+        close = difflib.get_close_matches(
+            compact, list(canonical_compacts), n=1, cutoff=0.8
+        )
+        if not close:
+            continue
+        canonical = canonical_compacts[close[0]]
+        if canonical not in seen:
+            matches.append((canonical, token))
+            seen.add(canonical)
+    return matches
+
+
+def project_term_explanation(message: str) -> str:
+    """Return a short local explanation for a single canonical/alias term query."""
+    compact = _compact_term(message)
+    changed = True
+    while changed:
+        changed = False
+        for prefix in TERM_QUERY_PREFIXES:
+            if compact.startswith(prefix):
+                compact = compact[len(prefix):]
+                changed = True
+        for suffix in TERM_QUERY_SUFFIXES:
+            if compact.endswith(suffix):
+                compact = compact[:-len(suffix)]
+                changed = True
+    if not compact:
+        return ""
+    aliases = {
+        _compact_term(alias): canonical
+        for canonical, values in PROJECT_TERM_ALIASES.items()
+        for alias in values
+    }
+    canonical = aliases.get(compact)
+    if canonical:
+        return PROJECT_TERM_EXPLANATIONS[canonical]
+    close = difflib.get_close_matches(compact, list(aliases), n=1, cutoff=0.82)
+    if close:
+        return PROJECT_TERM_EXPLANATIONS[aliases[close[0]]]
+    return ""
+
+
+def canonical_term_hint(matches: Sequence[tuple[str, str]]) -> str:
+    corrections: list[str] = []
+    for canonical, matched in matches:
+        if str(matched).strip().casefold() != canonical.casefold():
+            corrections.append(f"{matched.strip()} 指 {canonical}")
+    if not corrections:
+        return ""
+    return (
+        "【项目术语提示】" + "；".join(corrections[:3]) +
+        "。回答时使用标准名称。\n"
+    )
+
+
 def resolve_platform(value: Any = "auto") -> str:
     configured = str(value or "auto").strip().lower()
     if configured not in SUPPORTED_PLATFORMS:
@@ -344,8 +489,9 @@ def is_project_scope_question(message: str, history: Sequence[Mapping[str, str]]
     normalized = str(message or "").strip().casefold()
     if not normalized:
         return False
-    # Specific project names always win, so project questions may mention code or tools.
-    if _has_project_anchor(normalized):
+    # Specific/canonical project names and common misspellings always win, so
+    # project questions may mention code or tools.
+    if _has_project_anchor(normalized) or detect_project_terms(normalized):
         return True
     if GREETING_RE.fullmatch(normalized):
         return False
@@ -802,6 +948,9 @@ class AssistantApp:
 
     def chat(self, message: str, history: Sequence[Mapping[str, str]]) -> str:
         config = self.config()
+        explanation = project_term_explanation(message)
+        if explanation:
+            return explanation
         context = trim_chat_history(
             history,
             int(config["max_context_messages"]),
@@ -811,9 +960,11 @@ class AssistantApp:
             return PROJECT_SCOPE_REFUSAL
         key = resolve_key(config, self.studio_home)
         _platform, system_prompt = build_system_prompt(config)
+        term_hint = canonical_term_hint(detect_project_terms(message))
+        user_content = (term_hint + "用户问题：" + message) if term_hint else message
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend({"role": item["role"], "content": item["content"]} for item in context)
-        messages.append({"role": "user", "content": message})
+        messages.append({"role": "user", "content": user_content})
         return self.client.complete(
             key.key,
             messages,
@@ -1078,6 +1229,7 @@ class Handler(BaseHTTPRequestHandler):
             "reply": reply,
             "model": MODEL,
             "scope_refused": reply == PROJECT_SCOPE_REFUSAL,
+            "term_explanation": reply in PROJECT_TERM_EXPLANATIONS.values(),
         }
         try:
             config = self.app.config()
